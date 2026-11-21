@@ -52,6 +52,15 @@ export class Connection {
     return res.json();
   }
 
+  async apiBosses() {
+    if (IS_STATIC) {
+      await waitFor(() => window.FCEngine);
+      return window.FCEngine.require('./server/hub.js').apiBosses();
+    }
+    const res = await fetch('api/bosses');
+    return res.json();
+  }
+
   send(msg) {
     if (IS_STATIC) this._sendStatic(msg);
     else this._sendSocket(msg);

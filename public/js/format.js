@@ -195,11 +195,11 @@ export class LogFormatter {
     case '-crit':
       return {html: 'A critical hit!', cls: 'eff', ev: {type: 'crit', ident: args[0]}};
     case '-supereffective':
-      return {html: "It's super effective!", cls: 'eff', ev: {type: 'se'}};
+      return {html: "It's super effective!", cls: 'eff', ev: {type: 'se', ident: args[0]}};
     case '-resisted':
-      return {html: "It's not very effective…", cls: 'minor'};
+      return {html: "It's not very effective…", cls: 'minor', ev: {type: 'resisted', ident: args[0]}};
     case '-immune':
-      return {html: `It doesn't affect ${this.pk(args[0])}…${from ? ` <span class="minor">(${esc(from)})</span>` : ''}`};
+      return {html: `It doesn't affect ${this.pk(args[0])}…${from ? ` <span class="minor">(${esc(from)})</span>` : ''}`, ev: {type: 'immune', ident: args[0]}};
     case '-miss':
       return {html: args[1] ? `${this.pk(args[1], true)} avoided the attack!` : `${this.pk(args[0], true)}'s attack missed!`};
     case '-fail':

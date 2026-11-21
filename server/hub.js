@@ -6,6 +6,7 @@
  */
 const {Room, Game, rooms} = require('./game');
 const {fields} = require('./sim');
+const {listBosses} = require('./bosses');
 const {randomInt, randomHex} = require('./rand');
 
 function cleanName(name) {
@@ -15,6 +16,10 @@ function cleanName(name) {
 
 function apiFields() {
   return [...fields.FIELDS.keys()].map(id => fields.publicInfo(id));
+}
+
+function apiBosses() {
+  return listBosses();
 }
 
 function createHub() {
@@ -57,7 +62,7 @@ function createHub() {
       client.name = cleanName(msg.name);
       const old = clientsByToken.get(client.token);
       clientsByToken.set(client.token, client);
-      client.send({t: 'welcome', token: client.token, name: client.name});
+      client.send({t: 'welcome', token: client.token, name: client.name, bosses: apiBosses()});
       // Reconnect to an in-progress room
       let room = old?.room;
       if (!room && msg.room) room = rooms.get(String(msg.room).toUpperCase());
@@ -79,7 +84,7 @@ function createHub() {
         if (s) s.name = client.name;
         room.broadcastRoom();
       }
-      client.send({t: 'welcome', token: client.token, name: client.name});
+      client.send({t: 'welcome', token: client.token, name: client.name, bosses: apiBosses()});
       break;
     case 'create': {
       if (room) room.leave(client);
@@ -87,15 +92,10 @@ function createHub() {
       const r = new Room(mode, client, {
         difficulty: msg.difficulty,
         fillAI: msg.fillAI,
+        fieldFilter: msg.fieldFilter,
+        field: msg.field,
+        bossId: msg.bossId && msg.bossId !== 'none' ? msg.bossId : null,
       });
-      if (msg.fieldFilter && ['all', 'Reborn', 'Rejuvenation', 'Desolation'].includes(msg.fieldFilter)) {
-        r.fieldFilter = msg.fieldFilter;
-        r.rollField();
-      }
-      if (msg.field && (msg.field === 'random' || fields.FIELDS.has(msg.field))) {
-        r.fieldChoice = msg.field;
-        r.rollField();
-      }
       if (msg.quickStart && (mode === 'ai' || (mode === 'ffa' && msg.fillAI))) {
         r.startGame();
       } else {
@@ -129,6 +129,7 @@ function createHub() {
     case 'reroll':
     case 'setField':
     case 'setDifficulty':
+    case 'setBoss':
     case 'setOpenSheets':
     case 'addAI':
     case 'kick':
@@ -151,7 +152,7 @@ function createHub() {
     }
   }
 
-  return {connect, receive, disconnect, rooms, apiFields};
+  return {connect, receive, disconnect, rooms, apiFields, apiBosses};
 }
 
-module.exports = {createHub, apiFields, internals: {Room, Game, rooms}};
+module.exports = {createHub, apiFields, apiBosses, internals: {Room, Game, rooms}};

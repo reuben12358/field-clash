@@ -3,13 +3,14 @@ const path = require('path');
 const http = require('http');
 const express = require('express');
 const {WebSocketServer} = require('ws');
-const {createHub, apiFields} = require('./hub');
+const {createHub, apiFields, apiBosses} = require('./hub');
 const {fields} = require('./sim');
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.get('/api/fields', (req, res) => res.json(apiFields()));
+app.get('/api/bosses', (req, res) => res.json(apiBosses()));
 app.get('/healthz', (req, res) => res.send('ok'));
 
 const server = http.createServer(app);

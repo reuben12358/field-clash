@@ -16,9 +16,10 @@
       <a class="brand" id="nav-brand-home" href="./">
         <span class="brand-mark">FC</span>
         <span>Field Clash</span>
-        <span class="brand-sub" id="brand-field-count">63 Field States · Champions Dex</span>
+        <span class="brand-sub" id="brand-field-count">63 Field States · Lv.50 Champions</span>
       </a>
       <nav class="topbar-right" aria-label="Global actions">
+        <button class="ghost small" id="btn-sfx" type="button" title="Toggle battle sound effects">SFX: On</button>
         <button class="ghost small" id="btn-encyclopedia" type="button">Field Guide</button>
         <button class="name-chip" id="name-chip" type="button" title="Connection status &amp; trainer name">
           <span class="dot" aria-hidden="true"></span>
@@ -33,9 +34,9 @@
         <div class="home-wrap">
           <div class="hero">
             <div>
-              <h1 id="home-heading">Random Champions rosters.<br><em>Dynamic Reborn-verse fields.</em></h1>
+              <h1 id="home-heading">Lv.50 Champions rosters.<br><em>Dynamic Reborn-verse fields.</em></h1>
               <p class="lede">
-                Every match deals six-Pokémon random battle teams from the <strong>Pokémon Champions</strong> roster—complete with Mega Evolution—onto a random battlefield from <strong>Pokémon Reborn</strong>, <strong>Rejuvenation</strong>, and <strong>Desolation</strong>. Fields amplify moves, add secondary types, activate terrain abilities, and transform mid-fight.
+                Every match deals six-Pokémon Level 50 teams from the <strong>Pokémon Champions</strong> roster—complete with Mega Evolution—onto a live illustrated battlefield from <strong>Pokémon Reborn</strong>, <strong>Rejuvenation</strong>, and <strong>Desolation</strong>. Fields amplify moves, add secondary types, activate terrain abilities, and transform mid-fight.
               </p>
             </div>
 
@@ -66,28 +67,35 @@
             <article class="mode-panel" id="panel-mode-ai">
               <div class="mode-meta">
                 <span>01 · Solo Match</span>
-                <span class="format-pill">6v6 Singles</span>
+                <span class="format-pill">Lv.50 · 6v6 Singles</span>
               </div>
               <h2>VS AI Trainer</h2>
-              <p>Battle a field-aware Gym Leader AI that calculates field multipliers, secondary move typings, immunities, and Mega Evolutions.</p>
+              <p>Face iconic Reborn, Rejuvenation, and Desolation trainers whose hidden teams and field matchups scale with your chosen tier—or challenge a signature Boss Preset.</p>
               <div class="mode-options">
-                <span class="opt-label">AI Tier</span>
+                <span class="opt-label">Difficulty</span>
                 <div class="seg" id="seg-difficulty" role="group" aria-label="AI Difficulty">
-                  <button type="button" id="btn-diff-easy" data-v="easy">Easy</button>
-                  <button type="button" id="btn-diff-normal" data-v="normal" class="on">Normal</button>
-                  <button type="button" id="btn-diff-hard" data-v="hard">Hard</button>
+                  <button type="button" id="btn-diff-easy" data-v="easy" title="You get field-boosted Pokémon; AI gets field-hindered Pokémon">Easy</button>
+                  <button type="button" id="btn-diff-normal" data-v="normal" class="on" title="Both sides get an equal split of field-good and field-bad Pokémon">Normal</button>
+                  <button type="button" id="btn-diff-hard" data-v="hard" title="AI gets field-boosted Pokémon; you get field-hindered Pokémon">Hard</button>
                 </div>
+                <div class="diff-hint" id="home-diff-hint">Equal field-synergy split on both rosters · AI items &amp; moves hidden</div>
+              </div>
+              <div class="boss-select-row">
+                <label for="home-boss-select">Boss Challenge</label>
+                <select id="home-boss-select" aria-label="Optional preloaded boss fight">
+                  <option value="none">Random Trainer &amp; Field</option>
+                </select>
               </div>
               <div class="mode-actions">
                 <button class="primary" id="btn-ai-quick" type="button">Battle Now</button>
-                <button class="ghost" id="btn-ai-lobby" type="button" title="Inspect &amp; reroll teams or choose a field before starting">Stage Lobby</button>
+                <button class="ghost" id="btn-ai-lobby" type="button" title="Inspect &amp; reroll your team or choose a field/boss before starting">Stage Lobby</button>
               </div>
             </article>
 
             <article class="mode-panel" id="panel-mode-pvp">
               <div class="mode-meta">
                 <span>02 · Head-to-Head</span>
-                <span class="format-pill">6v6 Online</span>
+                <span class="format-pill">Lv.50 · 6v6 Online</span>
               </div>
               <h2>VS a Friend</h2>
               <p>Open a private online room with a shareable 5-letter code or invite link. Preview or hide full team sheets, reroll matchups, or lock in a specific field.</p>
@@ -103,7 +111,7 @@
             <article class="mode-panel" id="panel-mode-ffa">
               <div class="mode-meta">
                 <span>03 · Four-Corner Melee</span>
-                <span class="format-pill">1v1v1v1 FFA</span>
+                <span class="format-pill">Lv.50 · 1v1v1v1 FFA</span>
               </div>
               <h2>Free-For-All</h2>
               <p>Four trainers enter with six Pokémon each and one active slot per corner. Every trainer fights for themselves—last trainer standing claims victory.</p>
@@ -158,6 +166,12 @@
 
               <div class="panel host-controls" id="host-controls">
                 <h3>Match Rules &amp; Field</h3>
+                <div class="row" id="row-boss">
+                  <label for="sel-boss">Boss Preset</label>
+                  <select id="sel-boss">
+                    <option value="none">Random Trainer &amp; Field</option>
+                  </select>
+                </div>
                 <div class="row">
                   <label for="sel-field">Active Field</label>
                   <select id="sel-field"></select>
@@ -172,14 +186,14 @@
                   </select>
                 </div>
                 <div class="row" id="row-difficulty">
-                  <label>AI Tier</label>
+                  <label>Difficulty</label>
                   <div class="seg" id="seg-lobby-difficulty" role="group" aria-label="Lobby AI Difficulty">
                     <button type="button" id="btn-lobby-diff-easy" data-v="easy">Easy</button>
                     <button type="button" id="btn-lobby-diff-normal" data-v="normal">Normal</button>
                     <button type="button" id="btn-lobby-diff-hard" data-v="hard">Hard</button>
                   </div>
                 </div>
-                <div class="row">
+                <div class="row" id="row-open">
                   <label for="chk-open">Open Team Sheets</label>
                   <label class="switch">
                     <input type="checkbox" id="chk-open" checked>
@@ -219,7 +233,7 @@
           <div class="battle-main">
             <div class="arena" id="arena">
               <div class="arena-bg" id="arena-bg"></div>
-              <div class="arena-ground" id="arena-ground"></div>
+              <canvas class="arena-scene" id="arena-scene"></canvas>
               <canvas class="arena-fx" id="arena-fx"></canvas>
               <div class="arena-flash" id="arena-flash"></div>
 

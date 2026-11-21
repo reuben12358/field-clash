@@ -8,7 +8,9 @@ import {
   esc,
 } from './data.js';
 import {LogFormatter, parseHP} from './format.js';
-import {ArenaFX} from './fx.js';
+import {ArenaFX, ArenaScene} from './fx.js';
+import {getMoveFX} from './moves.js';
+import {sfx} from './sfx.js';
 import {Connection, IS_STATIC} from './net.js';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +21,7 @@ const $$ = sel => [...document.querySelectorAll(sel)];
 
 const FIELDS_BY_ID = new Map();
 let ALL_FIELDS = [];
+let ALL_BOSSES = [];
 let spotlightFieldId = null;
 let selectedGuideId = null;
 
@@ -29,7 +32,8 @@ let connected = false;
 let myToken = sessionStorage.getItem('pf_token') || '';
 let myName = localStorage.getItem('pf_name') || '';
 let homeDifficulty = 'normal';
-let lastQuickMode = null; // {mode, fillAI} if launched via Quick Start
+let homeBossId = 'none';
+let lastQuickMode = null; // {mode, fillAI, bossId} if launched via Quick Start
 
 let currentRoom = null;
 let mySeat = -1;
@@ -50,6 +54,7 @@ let forfeitConfirmTimer = null;
 let unreadChat = 0;
 let activeSideTab = 'log';
 
+const arenaScene = new ArenaScene($('#arena-scene'));
 const arenaFX = new ArenaFX($('#arena-fx'));
 
 const initialUrlParams = new URLSearchParams(window.location.search);
@@ -82,9 +87,14 @@ function showScreen(name) {
   $('#screen-battle').classList.toggle('hidden', name !== 'battle');
 
   if (name === 'battle') {
+    arenaScene.start();
     arenaFX.start();
-    requestAnimationFrame(() => arenaFX.resize());
+    requestAnimationFrame(() => {
+      arenaScene.resize();
+      arenaFX.resize();
+    });
   } else {
+    arenaScene.stop();
     arenaFX.stop();
   }
 }
@@ -92,7 +102,7 @@ function showScreen(name) {
 function parseDetails(details = '') {
   const parts = String(details).split(',').map(s => s.trim());
   const species = parts[0] || 'Pikachu';
-  let level = 100;
+  let level = 50;
   let gender = '';
   let shiny = false;
   for (const p of parts.slice(1)) {
@@ -119,8 +129,58 @@ function cacheBattleSprites(state) {
   }
 }
 
+function populateBossSelect(selectEl, bossList, currentVal = 'none') {
+  if (!selectEl || !Array.isArray(bossList) || !bossList.length) return;
+  if (selectEl.options.length <= 1) {
+    selectEl.innerHTML = '';
+    const randOpt = document.createElement('option');
+    randOpt.value = 'none';
+    randOpt.textContent = 'Random Trainer & Field';
+    selectEl.appendChild(randOpt);
+
+    const groups = {
+      Reborn: document.createElement('optgroup'),
+      Rejuvenation: document.createElement('optgroup'),
+      Desolation: document.createElement('optgroup'),
+    };
+    groups.Reborn.label = 'Pokémon Reborn Bosses';
+    groups.Rejuvenation.label = 'Pokémon Rejuvenation Bosses';
+    groups.Desolation.label = 'Pokémon Desolation Bosses';
+
+    for (const b of bossList) {
+      const opt = document.createElement('option');
+      opt.value = b.id;
+      opt.textContent = `${b.name} (${b.subtitle})`;
+      (groups[b.game] || groups.Reborn).appendChild(opt);
+    }
+    for (const g of Object.values(groups)) {
+      if (g.children.length) selectEl.appendChild(g);
+    }
+  }
+  selectEl.value = currentVal || 'none';
+}
+
+function updateHomeDiffHint() {
+  const el = $('#home-diff-hint');
+  if (!el) return;
+  const isBoss = homeBossId && homeBossId !== 'none';
+  if (homeDifficulty === 'easy') {
+    el.textContent = isBoss
+      ? 'Your roster is field-boosted vs Boss preset · AI items & moves hidden'
+      : 'You get field-boosted mons; AI gets field-weak mons · AI items & moves hidden';
+  } else if (homeDifficulty === 'hard') {
+    el.textContent = isBoss
+      ? 'Your roster is field-hindered vs Boss preset · AI items & moves hidden'
+      : 'AI gets field-boosted mons; you get field-weak mons · AI items & moves hidden';
+  } else {
+    el.textContent = isBoss
+      ? 'Standard random roster vs Boss signature team & field · AI items & moves hidden'
+      : 'Equal good/bad field-synergy split on both rosters · AI items & moves hidden';
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Field Metadata & Shared Card Renderer
+// Field & Boss Metadata
 // ---------------------------------------------------------------------------
 async function loadFields() {
   try {
@@ -133,7 +193,7 @@ async function loadFields() {
       name: 'Plain Field',
       games: [],
       intro: 'The battlefield has returned to normal.',
-      info: ['No active field modifiers — standard Pokémon Champions battle rules apply.'],
+      info: ['No active field modifiers — standard Pokémon Champions Lv.50 battle rules apply.'],
       naturePower: 'Tri Attack',
       mimicry: 'Normal',
       theme: {bg1: '#1e2736', bg2: '#0f141d', ground: 'rgba(24,32,46,0.72)', accent: '#f5a623', fx: ''},
@@ -141,12 +201,24 @@ async function loadFields() {
     });
 
     const families = new Set(list.map(f => f.family || f.id)).size;
-    $('#brand-field-count').textContent = `${families} Fields · ${list.length} States`;
+    $('#brand-field-count').textContent = `${families} Fields · ${list.length} States · Lv.50`;
 
     rollSpotlightField();
     renderGuideList();
   } catch (err) {
     console.error('Failed to load fields', err);
+  }
+}
+
+async function loadBosses() {
+  try {
+    const list = await conn.apiBosses();
+    if (Array.isArray(list) && list.length) {
+      ALL_BOSSES = list;
+      populateBossSelect($('#home-boss-select'), ALL_BOSSES, homeBossId);
+    }
+  } catch (err) {
+    console.error('Failed to load bosses', err);
   }
 }
 
@@ -211,6 +283,7 @@ function applyArenaFieldTheme(f) {
   root.style.setProperty('--field2', th.bg2 || '#0f141d');
   root.style.setProperty('--field-ground', th.ground || 'rgba(24, 32, 46, 0.72)');
   root.style.setProperty('--field-accent', th.accent || '#f5a623');
+  arenaScene.setField(full.id || f.id, th, latestState?.gameType === 'freeforall');
   arenaFX.setField(th.fx || '', th.accent || '#f5a623');
 
   displayedField = {...full, ...f};
@@ -333,6 +406,10 @@ function onServerMessage(msg) {
     $('#name-chip').classList.add('online');
     if (document.activeElement !== $('#input-name')) {
       $('#input-name').value = myName;
+    }
+    if (Array.isArray(msg.bosses) && msg.bosses.length) {
+      ALL_BOSSES = msg.bosses;
+      populateBossSelect($('#home-boss-select'), ALL_BOSSES, homeBossId);
     }
     if (pendingUrlRoom && !IS_STATIC) {
       const code = pendingUrlRoom;
@@ -462,23 +539,31 @@ function renderMonTooltipHTML(mon) {
     })
     .join('');
 
+  let affHtml = '';
+  if (mon.fieldTier === 'good' || mon.fieldTier === 'bad') {
+    const label = mon.fieldTier === 'good' ? 'Field Synergy' : 'Field Handicap';
+    const reasons = (mon.fieldReasons || []).slice(0, 2).map(esc).join(' · ');
+    affHtml = `<div class="tip-aff ${mon.fieldTier}"><b>${label}</b>${reasons ? `: ${reasons}` : ''}</div>`;
+  }
+
   return `
     <div class="mon-tip">
       <div class="tip-head">
-        <span>${esc(mon.species || mon.name)} <small style="color:var(--text-secondary)">Lv.${mon.level || 100}</small></span>
+        <span>${esc(mon.species || mon.name)} <small style="color:var(--text-secondary)">Lv.${mon.level || 50}</small></span>
         <span>${types}</span>
       </div>
       ${metaParts.length ? `<div class="tip-meta">${metaParts.join(' · ')}</div>` : ''}
-      ${movesHtml || '<div style="color:var(--text-secondary);font-size:0.74rem;">Hidden team sheet</div>'}
+      ${affHtml}
+      ${movesHtml || '<div style="color:var(--text-secondary);font-size:0.74rem;">Opponent items &amp; moves hidden</div>'}
     </div>
   `;
 }
 
 function renderLobby(room) {
   const modeLabels = {
-    ai: 'Solo 6v6 · VS AI Trainer',
-    pvp: 'Online 6v6 · Head-to-Head',
-    ffa: '1v1v1v1 · Four-Trainer Free-For-All',
+    ai: room.bossId ? 'Solo Lv.50 · Boss Challenge' : 'Solo Lv.50 · VS AI Trainer',
+    pvp: 'Online Lv.50 · Head-to-Head',
+    ffa: '1v1v1v1 Lv.50 · Four-Trainer Free-For-All',
   };
   $('#lobby-mode').textContent = modeLabels[room.mode] || 'Match Staging';
   $('#lobby-code').textContent = room.code;
@@ -488,9 +573,18 @@ function renderLobby(room) {
   fieldCard.innerHTML = renderFieldCardHTML(fullField);
   applyFieldCardVars(fieldCard, fullField);
 
+  const bossList = room.bossList || ALL_BOSSES;
+  if (Array.isArray(bossList) && bossList.length) {
+    ALL_BOSSES = bossList;
+    populateBossSelect($('#sel-boss'), ALL_BOSSES, room.bossId || 'none');
+  }
+  $('#row-boss')?.classList.toggle('hidden', room.mode !== 'ai');
+  if ($('#sel-boss')) $('#sel-boss').disabled = !room.isHost;
+
   populateFieldSelect($('#sel-field'), room.fieldList, room.fieldChoice);
   $('#sel-filter').value = room.fieldFilter || 'all';
-  $('#row-filter').classList.toggle('hidden', room.fieldChoice !== 'random');
+  $('#row-filter').classList.toggle('hidden', room.fieldChoice !== 'random' || !!room.bossId);
+  $('#row-open')?.classList.toggle('hidden', room.mode === 'ai');
   $('#chk-open').checked = !!room.openSheets;
 
   const hasAISeats = room.mode === 'ai' || room.mode === 'ffa' || room.seats.some(s => s?.isAI);
@@ -560,7 +654,11 @@ function renderLobby(room) {
       for (const mon of seat.team || []) {
         const mc = document.createElement('div');
         mc.className = 'mon-card';
+        const affBadge = isYou && (mon.fieldTier === 'good' || mon.fieldTier === 'bad')
+          ? `<span class="aff-tag ${mon.fieldTier}">${mon.fieldTier === 'good' ? '+Field' : '-Field'}</span>`
+          : '';
         mc.innerHTML = `
+          ${affBadge}
           <img alt="${esc(mon.species)}">
           <div class="nm">${esc(mon.species)}</div>
           <div class="types">${(mon.types || []).map(typeBadge).join('')}</div>
@@ -749,6 +847,56 @@ function triggerSpriteAnim(sid, cls) {
   setTimeout(() => img.classList.remove(cls), 750);
 }
 
+function slotCenterInArena(sid) {
+  const arena = $('#arena');
+  const aRect = arena?.getBoundingClientRect();
+  const w = aRect?.width || arenaFX.w || 800;
+  const h = aRect?.height || arenaFX.h || 440;
+  const wrap = sid ? $(`#slot-${sid} .sprite-wrap`) : null;
+  if (wrap && aRect && aRect.width > 0) {
+    const r = wrap.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) {
+      return {
+        x: r.left - aRect.left + r.width * 0.5,
+        y: r.top - aRect.top + r.height * 0.55,
+      };
+    }
+  }
+  const slotEl = sid ? $(`#slot-${sid}`) : null;
+  const isBack = slotEl?.dataset.back === '1';
+  return isBack ? {x: w * 0.18, y: h * 0.78} : {x: w * 0.82, y: h * 0.34};
+}
+
+function resolveMoveTargetSid(actorSid, targetIdent, style) {
+  if (['shield', 'boost', 'heal'].includes(style)) return actorSid;
+  const parsed = formatter.sideOf(targetIdent);
+  if (parsed && parsed !== actorSid) return parsed;
+  if (parsed === actorSid && targetIdent) return actorSid;
+  // Spread moves (Earthquake, Surf, Dazzling Gleam, etc.) omit single target ident
+  const opp = (latestState?.sides || []).find(s => s.sid !== actorSid && s.pokemonLeft > 0);
+  return opp?.sid || actorSid;
+}
+
+function triggerDirectionalLunge(actorSid, targetSid) {
+  const slotEl = $(`#slot-${actorSid}`);
+  const img = slotEl?.querySelector('.sprite');
+  if (!img) return;
+  const from = slotCenterInArena(actorSid);
+  const to = slotCenterInArena(targetSid);
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const step = Math.min(28, len * 0.14);
+  const isBack = slotEl.dataset.back === '1';
+  img.style.setProperty('--lx', `${Math.round((dx / len) * step)}px`);
+  img.style.setProperty('--ly', `${Math.round((dy / len) * step)}px`);
+  img.style.setProperty('--ls', isBack ? '1.32' : '1.08');
+  img.classList.remove('anim-lunge-dir');
+  void img.offsetWidth;
+  img.classList.add('anim-lunge-dir');
+  setTimeout(() => img.classList.remove('anim-lunge-dir'), 420);
+}
+
 function shakeArena(flashColor = null) {
   const arena = $('#arena');
   arena.classList.remove('shake');
@@ -781,6 +929,7 @@ async function drainQueue() {
           appendBattleLog(`◆ Field Active: <b>${esc(fInfo.name)}</b>`, 'fieldchg');
           flashArenaBanner(fInfo.name, fInfo.intro || '');
           arenaFX.burst(fInfo.theme?.accent || '#f5a623', 28);
+          sfx.play('field');
           await sleep(650);
         }
         continue;
@@ -813,6 +962,7 @@ async function drainQueue() {
         };
         renderSingleSlot(sid);
         triggerSpriteAnim(sid, 'anim-in');
+        sfx.play('switch');
         await sleep(360);
         break;
       }
@@ -829,8 +979,11 @@ async function drainQueue() {
 
       case 'mega': {
         const sid = formatter.sideOf(ev.ident);
+        const pt = slotCenterInArena(sid);
         triggerSpriteAnim(sid, 'anim-mega');
-        arenaFX.burst('#f5a623', 26);
+        arenaFX.burstAt(pt.x, pt.y, '#f5a623', 30, 190);
+        arenaFX.popup(pt.x, pt.y - 34, 'MEGA EVOLVE!', '#ffd43b');
+        sfx.play('mega');
         await sleep(520);
         break;
       }
@@ -839,22 +992,66 @@ async function drainQueue() {
         const sid = formatter.sideOf(ev.ident);
         const actor = formatter.pk(ev.ident, true);
         showArenaMessage(`${actor} used ${ev.move}!`, 1300);
+        const mfx = getMoveFX(ev.move);
+        const targetSid = resolveMoveTargetSid(sid, ev.target, mfx.style);
+        const fromPt = slotCenterInArena(sid);
+        const toPt = slotCenterInArena(targetSid);
+        const mult = Number($('#sel-speed')?.value || 1);
+        const animDur = Math.max(0.16, Math.min(0.65, 0.42 * mult));
         if (!ev.still) {
-          triggerSpriteAnim(sid, 'anim-lunge-up');
+          if (targetSid && targetSid !== sid) {
+            triggerDirectionalLunge(sid, targetSid);
+          } else {
+            triggerSpriteAnim(sid, mfx.style === 'heal' ? 'anim-heal' : 'anim-stat-up');
+          }
+          arenaFX.playMove({
+            from: fromPt,
+            to: toPt,
+            style: mfx.style,
+            type: mfx.type,
+            miss: !!ev.miss,
+            duration: animDur,
+          });
+          sfx.play(mfx.style);
         }
-        await sleep(380);
+        await sleep(420);
         break;
       }
 
-      case 'crit':
-      case 'se':
-        shakeArena(ev.type === 'crit' ? '#f5a623' : '#ffffff');
+      case 'crit': {
+        const pt = slotCenterInArena(formatter.sideOf(ev.ident));
+        arenaFX.popup(pt.x, pt.y - 28, 'CRITICAL HIT!', '#ffd43b');
+        sfx.play('crit');
+        shakeArena('#f5a623');
         await sleep(160);
         break;
+      }
+
+      case 'se': {
+        const pt = slotCenterInArena(formatter.sideOf(ev.ident));
+        arenaFX.popup(pt.x, pt.y - 18, 'SUPER EFFECTIVE!', '#69db7c');
+        sfx.play('se');
+        shakeArena('#ffffff');
+        await sleep(160);
+        break;
+      }
+
+      case 'resisted': {
+        const pt = slotCenterInArena(formatter.sideOf(ev.ident));
+        arenaFX.popup(pt.x, pt.y - 18, 'Resisted', '#ced4da');
+        break;
+      }
+
+      case 'immune': {
+        const pt = slotCenterInArena(formatter.sideOf(ev.ident));
+        arenaFX.popup(pt.x, pt.y - 18, 'IMMUNE', '#ff8787');
+        break;
+      }
 
       case 'damage': {
         const sid = formatter.sideOf(ev.ident);
         const hpInfo = parseHP(ev.hp);
+        const prevPct = visualMons[sid]?.hpPct ?? 100;
         if (visualMons[sid] && hpInfo) {
           visualMons[sid].hpPct = hpInfo.pct;
           if (hpInfo.cur !== undefined) visualMons[sid].hp = hpInfo.cur;
@@ -863,8 +1060,12 @@ async function drainQueue() {
           renderSingleSlot(sid);
         }
         if (!ev.silent) {
+          const pt = slotCenterInArena(sid);
+          const delta = hpInfo ? Math.max(1, prevPct - hpInfo.pct) : 0;
           triggerSpriteAnim(sid, 'anim-hit');
-          arenaFX.burst('#ea5b3d', 14);
+          arenaFX.burstAt(pt.x, pt.y, '#ea5b3d', 16, 150);
+          if (delta > 0) arenaFX.popup(pt.x, pt.y - 6, `-${delta}%`, '#ff8787');
+          sfx.play('hit');
           await sleep(320);
         }
         break;
@@ -873,13 +1074,18 @@ async function drainQueue() {
       case 'heal': {
         const sid = formatter.sideOf(ev.ident);
         const hpInfo = parseHP(ev.hp);
+        const prevPct = visualMons[sid]?.hpPct ?? 0;
         if (visualMons[sid] && hpInfo) {
           visualMons[sid].hpPct = hpInfo.pct;
           if (hpInfo.cur !== undefined) visualMons[sid].hp = hpInfo.cur;
           if (hpInfo.max !== undefined) visualMons[sid].maxhp = hpInfo.max;
           renderSingleSlot(sid);
         }
+        const pt = slotCenterInArena(sid);
+        const delta = hpInfo ? Math.max(1, hpInfo.pct - prevPct) : 0;
+        if (delta > 0) arenaFX.popup(pt.x, pt.y - 10, `+${delta}%`, '#69db7c');
         triggerSpriteAnim(sid, 'anim-heal');
+        sfx.play('heal');
         await sleep(260);
         break;
       }
@@ -898,6 +1104,7 @@ async function drainQueue() {
       case 'unboost': {
         const sid = formatter.sideOf(ev.ident);
         triggerSpriteAnim(sid, ev.type === 'boost' ? 'anim-stat-up' : 'anim-stat-down');
+        sfx.play(ev.type);
         await sleep(220);
         break;
       }
@@ -911,6 +1118,7 @@ async function drainQueue() {
           renderSingleSlot(sid);
         }
         triggerSpriteAnim(sid, 'anim-faint');
+        sfx.play('faint');
         await sleep(500);
         break;
       }
@@ -1082,7 +1290,7 @@ function renderSingleSlot(sid, authoritativeSide = null) {
     </div>
     <div class="top">
       <span class="nm">${esc(mon.name || mon.species)}${genderMark}</span>
-      <span class="lv">Lv.${mon.level || 100}</span>
+      <span class="lv">Lv.${mon.level || 50}</span>
     </div>
     <div class="hpbar"><i class="${barCls}" style="width:${pct}%"></i></div>
     <div class="meta">
@@ -1109,6 +1317,21 @@ function moveNeedsFFATarget(m) {
   if (!latestState || latestState.gameType !== 'freeforall') return false;
   const tgt = m.target || m.moveTarget || 'normal';
   return ['normal', 'any', 'adjacentFoe'].includes(tgt);
+}
+
+function formatEffMult(eff) {
+  if (eff === 0) return '0×';
+  if (eff === 0.25) return '¼×';
+  if (eff === 0.5) return '½×';
+  if (eff === 0.125) return '⅛×';
+  return `${eff}×`;
+}
+
+function formatEffBadge(eff) {
+  if (typeof eff !== 'number' || eff === 1) return '';
+  if (eff === 0) return '<span class="fxb imm">IMMUNE</span>';
+  if (eff > 1) return `<span class="fxb se">SE ${formatEffMult(eff)}</span>`;
+  return `<span class="fxb res">${formatEffMult(eff)}</span>`;
 }
 
 function submitMoveWithTarget(moveIndex, targetSeat = null) {
@@ -1193,8 +1416,8 @@ function renderControls() {
   }
   if (canMega && !forceSwitch) {
     html += `
-      <button type="button" class="mega-toggle ${megaArmed ? 'on' : ''}" id="btn-mega-toggle">
-        <span>◆ MEGA EVOLVE</span>
+      <button type="button" class="mega-toggle ${megaArmed ? 'on' : ''}" id="btn-mega-toggle" title="Hotkey: M">
+        <span>◆ MEGA EVOLVE [M]</span>
       </button>
     `;
   }
@@ -1203,10 +1426,13 @@ function renderControls() {
   // FFA Target Selection Bar (when a single-target move is armed)
   if (pendingTargetMove !== null && !forceSwitch) {
     const foes = aliveOpponentSides();
+    const effMap = pendingTargetMove.move.effBySeat || {};
     const targetBtns = foes
       .map(f => {
         const mon = f.active;
-        return `<button type="button" class="target-btn" data-target-seat="${f.seat}">${esc(f.name)}: ${esc(mon.species)} (${mon.hpPct}%)</button>`;
+        const eff = effMap[f.seat];
+        const effNote = typeof eff === 'number' && eff !== 1 ? ` · ${formatEffMult(eff)}` : '';
+        return `<button type="button" class="target-btn" data-target-seat="${f.seat}">${esc(f.name)}: ${esc(mon.species)} (${mon.hpPct}%${esc(effNote)})</button>`;
       })
       .join('');
     html += `
@@ -1231,8 +1457,10 @@ function renderControls() {
       if (m.field?.fails) {
         fxBadges.push('<span class="fxb fail">FAILS</span>');
       } else {
-        if (m.field?.mult && m.field.mult > 1) fxBadges.push(`<span class="fxb up">${m.field.mult}×</span>`);
-        if (m.field?.mult && m.field.mult < 1) fxBadges.push(`<span class="fxb down">${m.field.mult}×</span>`);
+        const effBadge = formatEffBadge(m.eff);
+        if (effBadge) fxBadges.push(effBadge);
+        if (m.field?.mult && m.field.mult > 1) fxBadges.push(`<span class="fxb up">Field ${m.field.mult}×</span>`);
+        if (m.field?.mult && m.field.mult < 1) fxBadges.push(`<span class="fxb down">Field ${m.field.mult}×</span>`);
         if (m.field?.adds?.length) {
           for (const a of m.field.adds) fxBadges.push(`<span class="fxb add">+${esc(a)}</span>`);
         }
@@ -1249,7 +1477,7 @@ function renderControls() {
 
       html += `
         <button type="button" class="move-btn ${selected ? 'selected' : ''}" data-move-idx="${idx}" style="--tc:${color}" ${disabled ? 'disabled' : ''}>
-          <span class="mn">${esc(m.name || m.move)}</span>
+          <span class="mn"><span class="move-kbd">[${idx + 1}]</span>${esc(m.name || m.move)}</span>
           <span class="ms">
             <span>${esc(effType)}</span>
             <span>·</span>
@@ -1370,25 +1598,32 @@ function renderTeamDetailTab() {
   for (const side of orderedSides) {
     html += `<div class="td-section-title">${esc(side.name)}${side.isYou ? ' (Your Team)' : ''} · ${side.pokemonLeft}/6 Left</div>`;
     for (const m of side.team || []) {
+      const hasOpenSheet = Boolean(m.ability || m.item || m.moves);
       const statsLine = m.stats
         ? `Atk ${m.stats.atk} · Def ${m.stats.def} · SpA ${m.stats.spa} · SpD ${m.stats.spd} · Spe ${m.stats.spe}`
         : '';
-      const movesLine = m.moves
-        ? m.moves.map(mv => esc(mv.name)).join(' · ')
-        : 'Hidden moveset';
+      const typesRow = (m.types || []).map(typeBadge).join(' ');
+      const sheetHtml = hasOpenSheet
+        ? `
+            <div style="font-size:0.74rem;color:var(--text-secondary);">
+              ${esc(m.ability || '—')} · ${esc(m.item || 'None')}
+            </div>
+            ${statsLine ? `<div class="stats">${esc(statsLine)}</div>` : ''}
+            <div style="font-size:0.74rem;margin-top:2px;">${(m.moves || []).map(mv => esc(mv.name)).join(' · ')}</div>
+          `
+        : `
+            <div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;">${typesRow}</div>
+            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">Items, ability &amp; moves hidden</div>
+          `;
       html += `
         <div class="td-mon" style="${m.fainted ? 'opacity:0.45;' : ''}">
           <img data-sp="${esc(m.species)}" alt="${esc(m.species)}">
           <div>
             <div style="display:flex;justify-content:space-between;gap:6px;">
-              <b>${esc(m.species)} <small style="color:var(--text-secondary)">Lv.${m.level}</small></b>
+              <b>${esc(m.species)} <small style="color:var(--text-secondary)">Lv.${m.level || 50}</small></b>
               <span>${m.fainted ? 'FNT' : `${m.hpPct}%`}</span>
             </div>
-            <div style="font-size:0.74rem;color:var(--text-secondary);">
-              ${m.ability ? esc(m.ability) : '???'} · ${m.item ? esc(m.item) : '???'}
-            </div>
-            ${statsLine ? `<div class="stats">${esc(statsLine)}</div>` : ''}
-            <div style="font-size:0.74rem;margin-top:2px;">${movesLine}</div>
+            ${sheetHtml}
           </div>
         </div>
       `;
@@ -1453,6 +1688,7 @@ function handlePlayAgain() {
       difficulty: currentRoom?.difficulty || homeDifficulty,
       fillAI: lastQuickMode.fillAI,
       fieldFilter: $('#home-field-filter').value,
+      bossId: currentRoom?.bossId || lastQuickMode.bossId || undefined,
       quickStart: true,
     });
   } else if (currentRoom?.isHost) {
@@ -1463,6 +1699,7 @@ function handlePlayAgain() {
       mode: 'ai',
       difficulty: homeDifficulty,
       fieldFilter: $('#home-field-filter').value,
+      bossId: homeBossId !== 'none' ? homeBossId : undefined,
       quickStart: true,
     });
   }
@@ -1498,6 +1735,16 @@ function bindEvents() {
     }
   });
 
+  // SFX Toggle
+  const sfxBtn = $('#btn-sfx');
+  if (sfxBtn) {
+    sfxBtn.textContent = sfx.enabled ? 'SFX: On' : 'SFX: Off';
+    sfxBtn.addEventListener('click', () => {
+      const on = sfx.toggle();
+      sfxBtn.textContent = on ? 'SFX: On' : 'SFX: Off';
+    });
+  }
+
   // Name sync
   if (myName) {
     $('#input-name').value = myName;
@@ -1521,33 +1768,44 @@ function bindEvents() {
     }
   });
 
-  // Home difficulty segmented control
+  // Home difficulty segmented control & Boss Challenge selector
   $$('#seg-difficulty button').forEach(btn => {
     btn.addEventListener('click', () => {
       homeDifficulty = btn.dataset.v;
       $$('#seg-difficulty button').forEach(b => b.classList.toggle('on', b === btn));
+      updateHomeDiffHint();
     });
   });
 
+  $('#home-boss-select')?.addEventListener('change', e => {
+    homeBossId = e.target.value || 'none';
+    updateHomeDiffHint();
+  });
+  updateHomeDiffHint();
+
   // Home Match Launchers
   $('#btn-ai-quick').addEventListener('click', () => {
-    lastQuickMode = {mode: 'ai', fillAI: false};
+    const bossId = homeBossId !== 'none' ? homeBossId : undefined;
+    lastQuickMode = {mode: 'ai', fillAI: false, bossId};
     send({
       t: 'create',
       mode: 'ai',
       difficulty: homeDifficulty,
       fieldFilter: $('#home-field-filter').value,
+      bossId,
       quickStart: true,
     });
   });
 
   $('#btn-ai-lobby').addEventListener('click', () => {
+    const bossId = homeBossId !== 'none' ? homeBossId : undefined;
     lastQuickMode = null;
     send({
       t: 'create',
       mode: 'ai',
       difficulty: homeDifficulty,
       fieldFilter: $('#home-field-filter').value,
+      bossId,
       quickStart: false,
     });
   });
@@ -1636,6 +1894,9 @@ function bindEvents() {
 
   $('#btn-leave').addEventListener('click', () => send({t: 'leave'}));
 
+  $('#sel-boss')?.addEventListener('change', () => {
+    send({t: 'setBoss', bossId: $('#sel-boss').value});
+  });
   $('#sel-field').addEventListener('change', () => {
     send({t: 'setField', id: $('#sel-field').value, filter: $('#sel-filter').value});
   });
@@ -1712,7 +1973,7 @@ function bindEvents() {
     send({t: 'leave'});
   });
 
-  // Escape key closes modals or cancels FFA target selection
+  // Keyboard shortcuts: Escape closes modals/targeting; 1-4 selects moves; M toggles Mega
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       if (!$('#modal-guide').classList.contains('hidden')) {
@@ -1720,6 +1981,26 @@ function bindEvents() {
       } else if (pendingTargetMove !== null) {
         pendingTargetMove = null;
         renderControls();
+      }
+      return;
+    }
+
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
+    if ($('#screen-battle').classList.contains('hidden') || !$('#modal-guide').classList.contains('hidden')) return;
+
+    if (['1', '2', '3', '4'].includes(e.key)) {
+      const idx = Number(e.key) - 1;
+      const btn = $(`#controls .move-btn[data-move-idx="${idx}"]`);
+      if (btn && !btn.disabled) {
+        e.preventDefault();
+        btn.click();
+      }
+    } else if (e.key === 'm' || e.key === 'M') {
+      const megaBtn = $('#btn-mega-toggle');
+      if (megaBtn && !megaBtn.disabled) {
+        e.preventDefault();
+        megaBtn.click();
       }
     }
   });
@@ -1730,4 +2011,5 @@ function bindEvents() {
 // ---------------------------------------------------------------------------
 bindEvents();
 loadFields();
+loadBosses();
 conn.start();

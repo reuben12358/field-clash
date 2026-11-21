@@ -70,6 +70,8 @@
     "node_modules/sql-template-strings/index.js",
     "node_modules/ts-chacha20/build/src/chacha20.js",
     "server/ai.js",
+    "server/bosses.js",
+    "server/fields/affinity.js",
     "server/fields/desolation.js",
     "server/fields/engine.js",
     "server/fields/helpers.js",

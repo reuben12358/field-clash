@@ -1,14 +1,20 @@
 'use strict';
 const {randomInt} = require('./rand');
-const {randomTeam, createBattle, describeSet, fields, Dex} = require('./sim');
+const {
+  randomTeam,
+  createBattle,
+  describeSet,
+  publicMoveEffectiveness,
+  scoreSetOnField,
+  generateFieldTeam,
+  generateAIMatchupTeams,
+  fields,
+  Dex,
+} = require('./sim');
 const ai = require('./ai');
+const bosses = require('./bosses');
 
 const TURN_TIME_MS = 150 * 1000;
-const AI_NAMES = ['Ace Trainer Julia', 'Gym Leader Corey', 'Elite Shelly', 'Champion Ame', 'Ace Trainer Florinia',
-  'Gym Leader Titania', 'Aya', 'Gym Leader Serra', 'Gym Leader Noel', 'Gym Leader Radomus', 'Gym Leader Luna',
-  'Gym Leader Samson', 'Gym Leader Charlotte', 'Gym Leader Terra', 'Gym Leader Ciel', 'Gym Leader Adrienn',
-  'Gym Leader Saphira', 'Elite Lin', 'Gym Leader Valarie', 'Gym Leader Amaria', 'Rejuv Leader Aster', 'Madame X',
-  'Rejuv Leader Venam', 'Rejuv Leader Keta', 'Rejuv Leader Narcissa', 'Rejuv Leader Crawli', 'Desolation Leader Selene'];
 
 const rooms = new Map();
 const VOLATILE_NAMES = {
@@ -31,42 +37,115 @@ function makeCode() {
   } while (rooms.has(code));
   return code;
 }
-function pickAIName(used) {
-  const pool = AI_NAMES.filter(n => !used.includes(n));
-  return pool[randomInt(pool.length)] || 'AI Trainer';
-}
 
 class Room {
   constructor(mode, host, opts = {}) {
     this.code = makeCode();
     this.mode = mode; // 'ai' | 'pvp' | 'ffa'
     this.seatCount = mode === 'ffa' ? 4 : 2;
-    this.difficulty = opts.difficulty || 'normal';
-    this.fieldFilter = 'all';
-    this.fieldChoice = 'random'; // 'random' or field id
+    this.difficulty = ['easy', 'normal', 'hard'].includes(opts.difficulty) ? opts.difficulty : 'normal';
+    this.fieldFilter = ['all', 'Reborn', 'Rejuvenation', 'Desolation'].includes(opts.fieldFilter) ? opts.fieldFilter : 'all';
+    this.fieldChoice = opts.field && (opts.field === 'random' || fields.FIELDS.has(opts.field)) ? opts.field : 'random';
+    this.bossId = mode === 'ai' && opts.bossId && bosses.getBoss(opts.bossId) ? opts.bossId : null;
+    this.normalBalance = 2;
     this.fieldId = null;
-    this.openSheets = true;
+    // Hide opponent items & moves vs AI (and by default in AI-filled FFA)
+    this.openSheets = mode === 'pvp';
     this.status = 'lobby';
     this.seats = Array.from({length: this.seatCount}, () => null);
     this.spectators = new Set();
     this.chat = [];
     this.game = null;
     this.hostToken = host.token;
-    this.seats[0] = {token: host.token, name: host.name, isAI: false, client: host, team: randomTeam()};
-    host.room = this;
-    if (mode === 'ai') this.seats[1] = this.makeAISeat();
-    if (mode === 'ffa' && opts.fillAI) for (let i = 1; i < 4; i++) this.seats[i] = this.makeAISeat();
+
     this.rollField();
+
+    this.seats[0] = {token: host.token, name: host.name, isAI: false, client: host, team: []};
+    host.room = this;
+    if (mode === 'ai') this.seats[1] = this.makeAISeat(false);
+    if (mode === 'ffa' && opts.fillAI) for (let i = 1; i < 4; i++) this.seats[i] = this.makeAISeat(true);
+
+    this.syncTeamsToField();
+
     rooms.set(this.code, this);
     this.lastActivity = Date.now();
   }
-  makeAISeat() {
+
+  makeAISeat(withRandomTeam = true) {
     const used = this.seats.filter(Boolean).map(s => s.name);
-    return {token: null, name: pickAIName(used), isAI: true, client: null, team: randomTeam()};
+    const boss = this.bossId ? bosses.getBoss(this.bossId) : null;
+    const name = boss ? boss.name : bosses.pickAIName(used, this.fieldId);
+    return {token: null, name, isAI: true, client: null, team: withRandomTeam ? randomTeam() : []};
   }
+
   rollField() {
+    if (this.bossId) {
+      const boss = bosses.getBoss(this.bossId);
+      if (boss) {
+        this.fieldChoice = boss.fieldId;
+        this.fieldId = boss.fieldId;
+        return;
+      }
+    }
     this.fieldId = this.fieldChoice === 'random' ? fields.randomFieldId(this.fieldFilter) : this.fieldChoice;
   }
+
+  syncTeamsToField({refreshAIName = false} = {}) {
+    if (this.mode === 'ai') {
+      const boss = this.bossId ? bosses.getBoss(this.bossId) : null;
+      if (boss) {
+        this.fieldId = boss.fieldId;
+        this.fieldChoice = boss.fieldId;
+        if (this.seats[1]) {
+          this.seats[1].name = boss.name;
+          this.seats[1].team = bosses.buildBossTeam(boss.id);
+        }
+        if (this.seats[0]) {
+          this.seats[0].team = this.difficulty === 'easy'
+            ? generateFieldTeam(this.fieldId, 'good')
+            : this.difficulty === 'hard'
+              ? generateFieldTeam(this.fieldId, 'bad')
+              : randomTeam();
+        }
+        this.normalBalance = null;
+        return;
+      }
+
+      if (refreshAIName && this.seats[1]?.isAI) {
+        const used = [this.seats[0]?.name].filter(Boolean);
+        this.seats[1].name = bosses.pickAIName(used, this.fieldId);
+      }
+      const {playerTeam, aiTeam, balanceCount} = generateAIMatchupTeams(this.fieldId, this.difficulty);
+      this.normalBalance = balanceCount;
+      if (this.seats[0]) this.seats[0].team = playerTeam;
+      if (this.seats[1]) this.seats[1].team = aiTeam;
+      return;
+    }
+
+    for (const s of this.seats) {
+      if (s && (!s.team || !s.team.length)) s.team = randomTeam();
+    }
+  }
+
+  rerollSinglePlayerTeam(seatIdx) {
+    const s = this.seats[seatIdx];
+    if (!s) return;
+    if (this.mode === 'ai' && seatIdx === 0) {
+      if (this.difficulty === 'easy') {
+        s.team = generateFieldTeam(this.fieldId, 'good');
+      } else if (this.difficulty === 'hard') {
+        s.team = generateFieldTeam(this.fieldId, 'bad');
+      } else if (this.bossId) {
+        s.team = randomTeam();
+      } else {
+        const k = this.normalBalance || 2;
+        s.team = generateFieldTeam(this.fieldId, {good: k, bad: k, neutral: 6 - 2 * k});
+      }
+      return;
+    }
+    s.team = randomTeam();
+  }
+
   clients() {
     const out = [];
     for (const s of this.seats) if (s?.client) out.push(s.client);
@@ -117,7 +196,6 @@ class Room {
     }
     client.room = null;
     if (!this.seats.some(s => s && !s.isAI && s.client) && !this.spectators.size) {
-      // nobody connected; clean up later
       this.lastActivity = Date.now();
     }
     this.broadcastRoom();
@@ -133,6 +211,7 @@ class Room {
 
   roomView(client) {
     const you = this.seatOf(client);
+    const showOpponentSheets = this.mode !== 'ai' && this.openSheets;
     return {
       code: this.code,
       mode: this.mode,
@@ -140,11 +219,14 @@ class Room {
       you,
       isHost: this.isHost(client),
       difficulty: this.difficulty,
+      bossId: this.bossId,
+      bossList: bosses.listBosses(),
+      normalBalance: this.normalBalance,
       fieldChoice: this.fieldChoice,
       fieldFilter: this.fieldFilter,
       field: fields.publicInfo(this.fieldId),
       fieldList: fields.listFields(),
-      openSheets: this.openSheets,
+      openSheets: showOpponentSheets,
       winner: this.game?.winner ?? null,
       chat: this.chat.slice(-50),
       seats: this.seats.map((s, i) => s && {
@@ -153,8 +235,8 @@ class Room {
         connected: s.isAI || !!s.client,
         isHost: s.token === this.hostToken,
         team: s.team.map(set => {
-          const d = describeSet(set);
-          return (i === you || this.openSheets || this.status === 'ended')
+          const d = describeSet(set, this.fieldId);
+          return (i === you || showOpponentSheets)
             ? d
             : {species: d.species, spriteid: d.spriteid, types: d.types, level: d.level};
         }),
@@ -174,13 +256,22 @@ class Room {
     case 'reroll': {
       if (msg.what === 'field') {
         if (!host) return;
+        if (this.bossId) {
+          this.bossId = null;
+          this.fieldChoice = 'random';
+        }
         this.rollField();
+        if (this.mode === 'ai') this.syncTeamsToField({refreshAIName: true});
       } else if (msg.what === 'teams') {
         if (!host) return;
-        for (const s of this.seats) if (s) s.team = randomTeam();
+        if (this.mode === 'ai') {
+          this.syncTeamsToField();
+        } else {
+          for (const s of this.seats) if (s) s.team = randomTeam();
+        }
       } else if (msg.what === 'myteam') {
         if (mySeat < 0) return;
-        this.seats[mySeat].team = randomTeam();
+        this.rerollSinglePlayerTeam(mySeat);
         this.system(`${this.seats[mySeat].name} rerolled their team.`);
       }
       break;
@@ -188,21 +279,38 @@ class Room {
     case 'setField':
       if (!host) return;
       if (msg.id !== 'random' && !fields.FIELDS.has(msg.id)) return;
+      this.bossId = null;
       this.fieldChoice = msg.id;
       if (msg.filter) this.fieldFilter = msg.filter;
       this.rollField();
+      if (this.mode === 'ai') this.syncTeamsToField({refreshAIName: true});
       break;
     case 'setDifficulty':
       if (!host || !['easy', 'normal', 'hard'].includes(msg.value)) return;
       this.difficulty = msg.value;
+      if (this.mode === 'ai') this.syncTeamsToField();
       break;
+    case 'setBoss': {
+      if (!host || this.mode !== 'ai') return;
+      if (!msg.bossId || msg.bossId === 'none') {
+        this.bossId = null;
+        this.fieldChoice = 'random';
+        this.rollField();
+        this.syncTeamsToField({refreshAIName: true});
+      } else if (bosses.getBoss(msg.bossId)) {
+        this.bossId = msg.bossId;
+        this.rollField();
+        this.syncTeamsToField();
+      }
+      break;
+    }
     case 'setOpenSheets':
-      if (!host) return;
+      if (!host || this.mode === 'ai') return;
       this.openSheets = !!msg.value;
       break;
     case 'addAI':
       if (!host || this.mode === 'ai') return;
-      if (this.seats[msg.seat] === null) this.seats[msg.seat] = this.makeAISeat();
+      if (this.seats[msg.seat] === null) this.seats[msg.seat] = this.makeAISeat(true);
       break;
     case 'kick': {
       if (!host) return;
@@ -219,7 +327,7 @@ class Room {
       if (!host) return;
       if (this.seats.some(s => !s)) {
         if (this.mode === 'ffa') {
-          for (let i = 0; i < 4; i++) if (!this.seats[i]) this.seats[i] = this.makeAISeat();
+          for (let i = 0; i < 4; i++) if (!this.seats[i]) this.seats[i] = this.makeAISeat(true);
         } else {
           client.send({t: 'error', msg: 'Waiting for an opponent to join.'});
           return;
@@ -234,8 +342,12 @@ class Room {
 
   startGame() {
     if (this.status === 'ended') {
-      for (const s of this.seats) if (s) s.team = randomTeam();
       this.rollField();
+      if (this.mode === 'ai') {
+        this.syncTeamsToField({refreshAIName: !this.bossId});
+      } else {
+        for (const s of this.seats) if (s) s.team = randomTeam();
+      }
     }
     this.status = 'battle';
     this.game = new Game(this);
@@ -247,13 +359,17 @@ class Room {
     if (this.game) this.game.destroy();
     this.game = null;
     this.status = 'lobby';
-    for (const s of this.seats) if (s) s.team = randomTeam();
     // drop disconnected humans
     for (let i = 0; i < this.seats.length; i++) {
       const s = this.seats[i];
       if (s && !s.isAI && !s.client) this.seats[i] = null;
     }
     this.rollField();
+    if (this.mode === 'ai') {
+      this.syncTeamsToField({refreshAIName: !this.bossId});
+    } else {
+      for (const s of this.seats) if (s) s.team = randomTeam();
+    }
     this.broadcastRoom();
   }
 }
@@ -263,8 +379,8 @@ class Game {
     this.room = room;
     this.ended = false;
     this.winner = null;
-    this.logs = []; // full public+secret history: [{lines}] raw
-    this.history = []; // raw lines with split info
+    this.logs = [];
+    this.history = [];
     this.pendingRequests = {};
     this.deadline = null;
     this.timer = null;
@@ -276,7 +392,7 @@ class Game {
   begin() {
     const b = this.battle;
     this.room.seats.forEach((s, i) => {
-      b.setPlayer(`p${i + 1}`, {name: s.name, team: s.team.map(set => ({...set}))});
+      b.setPlayer(`p${i + 1}`, {name: s.name, team: s.team.map(set => ({...set, level: 50}))});
     });
     this.flush();
   }
@@ -326,7 +442,6 @@ class Game {
 
   flush() {
     this.battle.sendUpdates?.();
-    // Send updates to everyone, then let AIs act.
     const lines = this.pendingLines || [];
     this.pendingLines = [];
     const b = this.battle;
@@ -359,7 +474,9 @@ class Game {
       const req = side.activeRequest;
       let choice;
       try {
-        choice = ai.choose(this.battle, side, req, this.room.difficulty);
+        // Preloaded Boss Challenges play with smart ('hard') AI decision-making
+        const aiDiff = this.room.bossId ? 'hard' : this.room.difficulty;
+        choice = ai.choose(this.battle, side, req, aiDiff);
       } catch (e) {
         console.error('AI error', e);
         choice = 'default';
@@ -448,6 +565,7 @@ class Game {
   // ---------------------------------------------------------------------
   pokeView(p, own) {
     const hpPct = p.hp <= 0 ? 0 : Math.max(1, Math.round(100 * p.hp / p.maxhp));
+    const showSheets = own || (this.room.mode !== 'ai' && this.room.openSheets);
     const v = {
       name: p.name,
       species: p.species.name,
@@ -460,10 +578,10 @@ class Game {
       fainted: !!p.fainted || p.hp <= 0,
       active: p.isActive,
       types: p.getTypes(),
-      boosts: Object.fromEntries(Object.entries(p.boosts).filter(([, v]) => v)),
+      boosts: Object.fromEntries(Object.entries(p.boosts).filter(([, val]) => val)),
       volatiles: Object.keys(p.volatiles).map(id => VOLATILE_NAMES[id]).filter(Boolean),
     };
-    if (own || this.room.openSheets) {
+    if (showSheets) {
       v.item = p.item ? Dex.mod('champions').items.get(p.item).name : 'None';
       v.ability = Dex.mod('champions').abilities.get(p.ability).name;
       v.moves = p.moveSlots.map(m => {
@@ -475,6 +593,10 @@ class Game {
       v.hp = p.hp;
       v.maxhp = p.maxhp;
       v.stats = p.storedStats;
+      const curField = fields.getState(this.battle).current;
+      const aff = scoreSetOnField(p.set, curField);
+      v.fieldTier = aff.tier;
+      v.fieldReasons = aff.reasons;
     }
     return v;
   }
@@ -522,6 +644,7 @@ class Game {
     const req = JSON.parse(JSON.stringify(side.activeRequest));
     const me = side.active[0];
     if (req.active && me) {
+      const oppSides = this.battle.sides.filter((_, i) => i !== seat);
       for (const m of req.active[0].moves) {
         const mv = Dex.mod('champions').moves.get(m.id);
         m.name = mv.name;
@@ -536,6 +659,20 @@ class Game {
           m.field = fields.describeMoveOnField(this.battle, me, m.id);
         } catch {
           m.field = {};
+        }
+        try {
+          if (oppSides.length === 1 && oppSides[0].active[0]) {
+            m.eff = publicMoveEffectiveness(this.battle, me, oppSides[0].active[0], m.id);
+          } else if (oppSides.length > 1) {
+            m.effBySeat = {};
+            this.battle.sides.forEach((s, idx) => {
+              if (idx !== seat && s.active[0] && !s.active[0].fainted) {
+                m.effBySeat[idx] = publicMoveEffectiveness(this.battle, me, s.active[0], m.id);
+              }
+            });
+          }
+        } catch {
+          // ignore effectiveness preview errors
         }
       }
     }
