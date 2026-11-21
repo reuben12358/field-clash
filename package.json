@@ -1,0 +1,24 @@
+{
+  "name": "field-clash",
+  "version": "1.0.0",
+  "description": "Field Clash — random Pokémon Champions teams on Pokémon Reborn / Rejuvenation / Desolation field effects. 6v6 vs AI or a friend, plus 1v1v1v1 free-for-all.",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "node server/index.js",
+    "start": "node server/index.js",
+    "build:web": "node tools/trace-engine.js && node tools/build-web.js",
+    "build:site": "node tools/build-web.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.3.0",
+    "pokemon-showdown": "^0.11.11",
+    "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12"
+  }
+}

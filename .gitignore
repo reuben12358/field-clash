@@ -1,0 +1,7 @@
+node_modules/
+site/
+research/raw/
+research/scratch/
+research/scratch_*
+*.log
+.DS_Store
