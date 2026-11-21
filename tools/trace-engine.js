@@ -26,17 +26,22 @@ fs.readdirSync = function (p, ...rest) {
 
 async function main() {
   const {Room, rooms} = require('../server/hub').internals;
-  const {randomTeam, fields} = require('../server/sim');
-  for (let i = 0; i < 40; i++) randomTeam();
+  const {randomTeam, parseTeamPaste, exportTeamPaste, fields} = require('../server/sim');
+  for (let i = 0; i < 25; i++) randomTeam();
+  for (let i = 0; i < 25; i++) randomTeam({dexMode: 'natdex'});
+  const samplePaste = exportTeamPaste(randomTeam({dexMode: 'natdex'}));
+  parseTeamPaste(samplePaste);
 
-  const runGame = (mode, fieldId) => new Promise(resolve => {
+  const runGame = (mode, fieldId, extraOpts = {}) => new Promise(resolve => {
     const host = {token: 'x'.repeat(32), name: 'Tracer', room: null, send() {}};
-    const room = new Room(mode, host, {fillAI: true});
+    const room = new Room(mode, host, {fillAI: true, ...extraOpts});
     if (mode !== 'ai') for (let i = 1; i < room.seatCount; i++) room.seats[i] = room.makeAISeat();
     room.seats[0].isAI = true;
     room.seats[0].token = null;
-    room.fieldChoice = fieldId;
-    room.rollField();
+    if (!extraOpts.bossId) {
+      room.fieldChoice = fieldId;
+      room.rollField();
+    }
     room.startGame();
     const timer = setInterval(() => {
       if (room.game.ended) {
@@ -50,6 +55,9 @@ async function main() {
   const ids = [...fields.FIELDS.keys()];
   const jobs = [];
   for (let i = 0; i < ids.length; i += 3) jobs.push(runGame('ai', ids[i]));
+  jobs.push(runGame('ai', 'chess', {bossId: 'radomus', levelMode: 'lv50'}));
+  jobs.push(runGame('ai', 'newworld', {bossId: 'lin', levelMode: 'canonical', customTeamPaste: samplePaste}));
+  jobs.push(runGame('ffa', ids[0], {dexMode: 'natdex'}));
   for (let i = 0; i < 3; i++) jobs.push(runGame('ffa', ids[(i * 7) % ids.length]));
   await Promise.all(jobs);
 

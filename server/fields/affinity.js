@@ -11,10 +11,12 @@
  */
 const {Dex, Teams, toID} = require('pokemon-showdown');
 const fields = require('./engine');
+const {FIELD_SEEDS} = require('./custom_dex');
 const H = require('./helpers');
 const {randomInt} = require('../rand');
 
-const dex = Dex.mod('champions');
+fields.install();
+const dex = Dex.mod('gen9');
 
 const STRIKER_IDS = new Set(H.STRIKER_MOVES.map(toID));
 const GROW_IDS = new Set(H.GROW_MOVES.map(toID));
@@ -55,13 +57,17 @@ const ABSORB_TYPE = {
   sapsipper: 'Grass',
 };
 
-let sharedGen = null;
-function getGenerator() {
-  if (!sharedGen) {
+const sharedGens = {};
+function getGenerator(dexMode = 'champions') {
+  const key = dexMode === 'natdex' ? 'natdex' : 'champions';
+  if (!sharedGens[key]) {
     fields.install();
-    sharedGen = Teams.getGenerator('gen9championsrandombattle@@@Adjust Level = 50');
+    const fmt = key === 'natdex'
+      ? 'gen9randombattle@@@Adjust Level = 50'
+      : 'gen9championsrandombattle@@@Adjust Level = 50';
+    sharedGens[key] = Teams.getGenerator(fmt);
   }
-  return sharedGen;
+  return sharedGens[key];
 }
 
 function typeEffMult(atkType, types) {
@@ -555,18 +561,27 @@ function scoreSetOnField(set, fieldId) {
     }
   }
 
+  // 6. Field Seed synergy
+  if (FIELD_SEEDS[f.id]?.seed && FIELD_SEEDS[f.id].seed === itemId) {
+    score += 2.4;
+    addReason(`Activates ${itemObj.name}`);
+  }
+
   const tier = score >= 1.0 ? 'good' : score <= -1.0 ? 'bad' : 'neutral';
   return {score: Math.round(score * 100) / 100, tier, reasons};
 }
 
 // ---------------------------------------------------------------------------
-// Fast Candidate Set Pool & Difficulty-Matched Team Builder
+// Fast Candidate Set Pools (Champions & National Dex) & Team Builder
 // ---------------------------------------------------------------------------
 const POOL_TARGET = 220;
-const candidatePool = [];
+const candidatePools = {
+  champions: [],
+  natdex: [],
+};
 
-function makeRandomSingleSet() {
-  const gen = getGenerator();
+function makeRandomSingleSet(dexMode = 'champions') {
+  const gen = getGenerator(dexMode);
   const keys = Object.keys(gen.randomSets);
   const key = keys[randomInt(keys.length)];
   const sp = gen.dex.species.get(key);
@@ -575,10 +590,13 @@ function makeRandomSingleSet() {
   return set;
 }
 
-function ensurePool() {
-  while (candidatePool.length < POOL_TARGET) {
-    candidatePool.push(makeRandomSingleSet());
+function ensurePool(dexMode = 'champions') {
+  const key = dexMode === 'natdex' ? 'natdex' : 'champions';
+  const pool = candidatePools[key];
+  while (pool.length < POOL_TARGET) {
+    pool.push(makeRandomSingleSet(key));
   }
+  return pool;
 }
 
 function isMegaSet(set) {
@@ -587,7 +605,7 @@ function isMegaSet(set) {
 }
 
 function baseSpeciesOf(set) {
-  return dex.species.get(set.species).baseSpecies;
+  return dex.species.get(set.species).baseSpecies || set.species;
 }
 
 function shuffleInPlace(arr) {
@@ -601,22 +619,25 @@ function shuffleInPlace(arr) {
 }
 
 /**
- * Build a 6-Pokémon Lv.50 Champions team matching `profile` on `fieldId`:
+ * Build a 6-Pokémon team matching `profile` on `fieldId`:
  *   - 'good':   6 field-benefitted Pokémon
  *   - 'bad':    6 field-disadvantaged Pokémon
  *   - {good, bad, neutral}: exact mix (used on Normal so both sides match!)
  */
-function generateFieldTeam(fieldId, profile = 'random', avoidBaseSpecies = null) {
+function generateFieldTeam(fieldId, profile = 'random', avoidBaseSpecies = null, opts = {}) {
+  const dexMode = opts.dexMode === 'natdex' ? 'natdex' : 'champions';
+  const targetLevel = Math.max(1, Number(opts.level) || 50);
+
   if (profile === 'random' || !fieldId || fieldId === 'none') {
-    const team = getGenerator().randomTeam();
-    for (const s of team) s.level = 50;
+    const team = getGenerator(dexMode).randomTeam();
+    for (const s of team) s.level = targetLevel;
     return team;
   }
 
-  ensurePool();
+  const candidatePool = ensurePool(dexMode);
   // Top up fresh variety each roll so repeated matches stay diverse
   for (let i = 0; i < 28; i++) {
-    candidatePool[randomInt(candidatePool.length)] = makeRandomSingleSet();
+    candidatePool[randomInt(candidatePool.length)] = makeRandomSingleSet(dexMode);
   }
 
   const scored = candidatePool.map((set, idx) => ({
@@ -631,7 +652,7 @@ function generateFieldTeam(fieldId, profile = 'random', avoidBaseSpecies = null)
   const needBad = profile === 'bad' ? 8 : (Number(profile?.bad) || 0) + 2;
   let extraDraws = 0;
   while (extraDraws < 90 && (countDistinct('good') < needGood || countDistinct('bad') < needBad)) {
-    const extraSet = makeRandomSingleSet();
+    const extraSet = makeRandomSingleSet(dexMode);
     scored.push({idx: -1 - extraDraws, set: extraSet, ...scoreSetOnField(extraSet, fieldId)});
     extraDraws++;
   }
@@ -674,7 +695,13 @@ function generateFieldTeam(fieldId, profile = 'random', avoidBaseSpecies = null)
         if (!pass && avoidBaseSpecies?.has(base)) continue;
         const mega = isMegaSet(entry.set);
         if (mega && hasMega) continue;
-        team.push({...entry.set, moves: [...entry.set.moves], evs: {...entry.set.evs}, ivs: {...entry.set.ivs}, level: 50});
+        team.push({
+          ...entry.set,
+          moves: [...entry.set.moves],
+          evs: {...entry.set.evs},
+          ivs: {...entry.set.ivs},
+          level: targetLevel,
+        });
         usedBase.add(base);
         consumedIdx.add(entry.idx);
         if (mega) hasMega = true;
@@ -695,7 +722,7 @@ function generateFieldTeam(fieldId, profile = 'random', avoidBaseSpecies = null)
 
   // Replace consumed entries in the rolling pool so the next call has fresh sets
   for (const idx of consumedIdx) {
-    if (idx >= 0) candidatePool[idx] = makeRandomSingleSet();
+    if (idx >= 0) candidatePool[idx] = makeRandomSingleSet(dexMode);
   }
 
   shuffleInPlace(team);
@@ -713,25 +740,25 @@ function generateFieldTeam(fieldId, profile = 'random', avoidBaseSpecies = null)
 /**
  * Generate matched Player + AI teams for a VS AI room given fieldId & difficulty.
  */
-function generateAIMatchupTeams(fieldId, difficulty = 'normal') {
+function generateAIMatchupTeams(fieldId, difficulty = 'normal', opts = {}) {
   if (difficulty === 'easy') {
-    const playerTeam = generateFieldTeam(fieldId, 'good');
+    const playerTeam = generateFieldTeam(fieldId, 'good', null, opts);
     const used = new Set(playerTeam.map(baseSpeciesOf));
-    const aiTeam = generateFieldTeam(fieldId, 'bad', used);
+    const aiTeam = generateFieldTeam(fieldId, 'bad', used, opts);
     return {playerTeam, aiTeam, balanceCount: null};
   }
   if (difficulty === 'hard') {
-    const aiTeam = generateFieldTeam(fieldId, 'good');
+    const aiTeam = generateFieldTeam(fieldId, 'good', null, opts);
     const used = new Set(aiTeam.map(baseSpeciesOf));
-    const playerTeam = generateFieldTeam(fieldId, 'bad', used);
+    const playerTeam = generateFieldTeam(fieldId, 'bad', used, opts);
     return {playerTeam, aiTeam, balanceCount: null};
   }
   // Normal: equal k in {1, 2, 3} good and k bad on both sides!
   const k = randomInt(1, 4); // 1, 2, or 3
   const spec = {good: k, bad: k, neutral: 6 - 2 * k};
-  const playerTeam = generateFieldTeam(fieldId, spec);
+  const playerTeam = generateFieldTeam(fieldId, spec, null, opts);
   const used = new Set(playerTeam.map(baseSpeciesOf));
-  const aiTeam = generateFieldTeam(fieldId, spec, used);
+  const aiTeam = generateFieldTeam(fieldId, spec, used, opts);
   return {playerTeam, aiTeam, balanceCount: k};
 }
 

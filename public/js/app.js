@@ -20,6 +20,7 @@ const $ = sel => document.querySelector(sel);
 const $$ = sel => [...document.querySelectorAll(sel)];
 
 const FIELDS_BY_ID = new Map();
+const BOSSES_BY_ID = new Map();
 let ALL_FIELDS = [];
 let ALL_BOSSES = [];
 let spotlightFieldId = null;
@@ -32,8 +33,21 @@ let connected = false;
 let myToken = sessionStorage.getItem('pf_token') || '';
 let myName = localStorage.getItem('pf_name') || '';
 let homeDifficulty = 'normal';
+let homeDexMode = 'champions';
+let homeLevelMode = 'lv50';
 let homeBossId = 'none';
-let lastQuickMode = null; // {mode, fillAI, bossId} if launched via Quick Start
+let savedCustomPaste = localStorage.getItem('fc_custom_paste') || '';
+let savedCustomCount = 0;
+let bossFilterGame = 'all';
+let bossFilterCat = 'all';
+let bossShowAll = false;
+let beatenBosses = new Set();
+try {
+  const rawBeaten = JSON.parse(localStorage.getItem('fc_beaten_bosses') || '[]');
+  if (Array.isArray(rawBeaten)) beatenBosses = new Set(rawBeaten);
+} catch {}
+
+let lastQuickMode = null; // {mode, fillAI, bossId, dexMode, levelMode} if launched via Quick Start
 
 let currentRoom = null;
 let mySeat = -1;
@@ -50,6 +64,7 @@ let battleKey = '';
 let endModalShownKey = '';
 let pendingTargetMove = null; // {index, move} when picking target in 1v1v1v1 FFA
 let megaArmed = false;
+let zArmed = false;
 let forfeitConfirmTimer = null;
 let unreadChat = 0;
 let activeSideTab = 'log';
@@ -129,52 +144,106 @@ function cacheBattleSprites(state) {
   }
 }
 
-function populateBossSelect(selectEl, bossList, currentVal = 'none') {
-  if (!selectEl || !Array.isArray(bossList) || !bossList.length) return;
-  if (selectEl.options.length <= 1) {
-    selectEl.innerHTML = '';
-    const randOpt = document.createElement('option');
-    randOpt.value = 'none';
-    randOpt.textContent = 'Random Trainer & Field';
-    selectEl.appendChild(randOpt);
+function indexBosses(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  ALL_BOSSES = list;
+  BOSSES_BY_ID.clear();
+  for (const b of list) BOSSES_BY_ID.set(b.id, b);
+  const openBtn = $('#btn-open-bosses');
+  if (openBtn) openBtn.textContent = `Story Bosses (${list.length})`;
+  updateBossProgressUI();
+  syncHomePickerUI();
+}
 
-    const groups = {
-      Reborn: document.createElement('optgroup'),
-      Rejuvenation: document.createElement('optgroup'),
-      Desolation: document.createElement('optgroup'),
-    };
-    groups.Reborn.label = 'Pokémon Reborn Bosses';
-    groups.Rejuvenation.label = 'Pokémon Rejuvenation Bosses';
-    groups.Desolation.label = 'Pokémon Desolation Bosses';
+function markBossBeaten(bossId) {
+  if (!bossId || beatenBosses.has(bossId)) return false;
+  beatenBosses.add(bossId);
+  try {
+    localStorage.setItem('fc_beaten_bosses', JSON.stringify([...beatenBosses]));
+  } catch {}
+  updateBossProgressUI();
+  return true;
+}
 
-    for (const b of bossList) {
-      const opt = document.createElement('option');
-      opt.value = b.id;
-      opt.textContent = `${b.name} (${b.subtitle})`;
-      (groups[b.game] || groups.Reborn).appendChild(opt);
-    }
-    for (const g of Object.values(groups)) {
-      if (g.children.length) selectEl.appendChild(g);
+function updateBossProgressUI() {
+  const pill = $('#boss-progress-pill');
+  if (pill) pill.textContent = `${beatenBosses.size} / ${ALL_BOSSES.length || 594} Defeated`;
+  const counts = {all: ALL_BOSSES.length, Reborn: 0, Rejuvenation: 0, Desolation: 0};
+  for (const b of ALL_BOSSES) counts[b.game] = (counts[b.game] || 0) + 1;
+  $$('#boss-game-tabs button').forEach(btn => {
+    const g = btn.dataset.game;
+    const label = g === 'all' ? 'All' : g;
+    if (counts[g]) btn.textContent = `${label} (${counts[g]})`;
+  });
+}
+
+function syncLevelModeUI(mode) {
+  homeLevelMode = mode === 'canonical' ? 'canonical' : 'lv50';
+  $$('#seg-home-level button, #seg-modal-level button').forEach(b => {
+    b.classList.toggle('on', b.dataset.v === homeLevelMode);
+  });
+  syncHomePickerUI();
+}
+
+function syncHomePickerUI() {
+  const boss = homeBossId && homeBossId !== 'none' ? BOSSES_BY_ID.get(homeBossId) : null;
+  const bossSum = $('#home-boss-summary');
+  if (bossSum) {
+    bossSum.textContent = boss
+      ? `${boss.displayName} · ${boss.fieldName}`
+      : 'Random Trainer & Field';
+  }
+  $('#btn-clear-home-boss')?.classList.toggle('hidden', !boss);
+  $('#row-home-level-mode')?.classList.toggle('hidden', !boss);
+
+  const fmtPill = $('#home-ai-format-pill');
+  if (fmtPill) {
+    if (boss && homeLevelMode === 'canonical') {
+      fmtPill.textContent = `Cap Lv.${boss.cap} · Story Sim`;
+    } else if (boss || homeDexMode === 'natdex' || savedCustomPaste) {
+      fmtPill.textContent = 'Lv.50 · NatDex 6v6';
+    } else {
+      fmtPill.textContent = 'Lv.50 · Champions 6v6';
     }
   }
-  selectEl.value = currentVal || 'none';
+
+  const teamSum = $('#home-team-summary');
+  const teamBtn = $('#btn-open-team');
+  if (teamSum) {
+    if (savedCustomPaste) {
+      teamSum.textContent = savedCustomCount
+        ? `Custom Team (${savedCustomCount} Pokémon)`
+        : 'Custom Showdown Team Active';
+      if (teamBtn) teamBtn.textContent = 'Edit Team';
+    } else {
+      teamSum.textContent = homeDexMode === 'natdex' || boss
+        ? 'Random Field-Matched (NatDex)'
+        : 'Random Field-Matched (Champions)';
+      if (teamBtn) teamBtn.textContent = 'Import Team';
+    }
+  }
+  updateHomeDiffHint();
 }
 
 function updateHomeDiffHint() {
   const el = $('#home-diff-hint');
   if (!el) return;
+  if (savedCustomPaste) {
+    el.textContent = 'Using your imported Showdown team · AI items & moves hidden';
+    return;
+  }
   const isBoss = homeBossId && homeBossId !== 'none';
   if (homeDifficulty === 'easy') {
     el.textContent = isBoss
-      ? 'Your roster is field-boosted vs Boss preset · AI items & moves hidden'
+      ? 'Your roster is field-boosted vs Boss team · AI items & moves hidden'
       : 'You get field-boosted mons; AI gets field-weak mons · AI items & moves hidden';
   } else if (homeDifficulty === 'hard') {
     el.textContent = isBoss
-      ? 'Your roster is field-hindered vs Boss preset · AI items & moves hidden'
+      ? 'Your roster is field-hindered vs Boss team · AI items & moves hidden'
       : 'AI gets field-boosted mons; you get field-weak mons · AI items & moves hidden';
   } else {
     el.textContent = isBoss
-      ? 'Standard random roster vs Boss signature team & field · AI items & moves hidden'
+      ? 'Standard random roster vs Boss canonical team & field · AI items & moves hidden'
       : 'Equal good/bad field-synergy split on both rosters · AI items & moves hidden';
   }
 }
@@ -193,7 +262,7 @@ async function loadFields() {
       name: 'Plain Field',
       games: [],
       intro: 'The battlefield has returned to normal.',
-      info: ['No active field modifiers — standard Pokémon Champions Lv.50 battle rules apply.'],
+      info: ['No active field modifiers — standard Pokémon battle rules apply.'],
       naturePower: 'Tri Attack',
       mimicry: 'Normal',
       theme: {bg1: '#1e2736', bg2: '#0f141d', ground: 'rgba(24,32,46,0.72)', accent: '#f5a623', fx: ''},
@@ -201,7 +270,7 @@ async function loadFields() {
     });
 
     const families = new Set(list.map(f => f.family || f.id)).size;
-    $('#brand-field-count').textContent = `${families} Fields · ${list.length} States · Lv.50`;
+    $('#brand-field-count').textContent = `${families} Fields · 594 Bosses`;
 
     rollSpotlightField();
     renderGuideList();
@@ -214,8 +283,7 @@ async function loadBosses() {
   try {
     const list = await conn.apiBosses();
     if (Array.isArray(list) && list.length) {
-      ALL_BOSSES = list;
-      populateBossSelect($('#home-boss-select'), ALL_BOSSES, homeBossId);
+      indexBosses(list);
     }
   } catch (err) {
     console.error('Failed to load bosses', err);
@@ -249,6 +317,7 @@ function renderFieldCardHTML(f, {compact = false, overlayBase = null} = {}) {
   const submeta = [];
   if (f.naturePower) submeta.push(`<span>Nature Power: <b>${esc(f.naturePower)}</b></span>`);
   if (f.mimicry) submeta.push(`<span>Camouflage / Mimicry: <b>${esc(f.mimicry)}</b></span>`);
+  if (f.seed) submeta.push(`<span>Field Seed: <b>${esc(f.seed)}</b></span>`);
 
   const infoItems = (f.info || []).map(line => `<li>${esc(line)}</li>`).join('');
   const tfItems = (f.transforms || [])
@@ -370,6 +439,216 @@ function renderGuideList() {
 }
 
 // ---------------------------------------------------------------------------
+// Story Boss Campaign Modal & Custom Showdown Team Modal
+// ---------------------------------------------------------------------------
+const CAT_LABELS = {
+  gym: 'Gym / Badge',
+  rival: 'Rival',
+  evil: 'Villain / Admin',
+  elite: 'Elite / Postgame',
+  boss: 'Story / Raid Boss',
+};
+
+const SAMPLE_SHOWDOWN_PASTE = [
+  'Luxray @ Luxrite',
+  'Ability: Intimidate',
+  'EVs: 252 Atk / 4 SpD / 252 Spe',
+  'Jolly Nature',
+  '- Wild Charge',
+  '- Crunch',
+  '- Ice Fang',
+  '- Close Combat',
+  '',
+  'Parasect-Aevian @ Elemental Seed',
+  'Ability: Resuscitation',
+  'EVs: 252 HP / 252 Atk / 4 SpD',
+  'Adamant Nature',
+  '- Leech Life',
+  '- Poison Jab',
+  '- Spore',
+  '- Swords Dance',
+  '',
+  'Typhlosion @ Typhlosion Crest',
+  'Ability: Flash Fire',
+  'EVs: 4 Atk / 252 SpA / 252 Spe',
+  'Naive Nature',
+  '- Eruption',
+  '- Flare Blitz',
+  '- Thunder Punch',
+  '- Scorching Sands',
+  '',
+  'Alakazam @ Psychium Z',
+  'Ability: Magic Guard',
+  'EVs: 252 SpA / 4 SpD / 252 Spe',
+  'Timid Nature',
+  '- Psychic',
+  '- Focus Blast',
+  '- Shadow Ball',
+  '- Calm Mind',
+  '',
+  'Gardevoir @ Magical Seed',
+  'Ability: Trace',
+  'EVs: 252 SpA / 4 SpD / 252 Spe',
+  'Timid Nature',
+  '- Moonblast',
+  '- Psyshock',
+  '- Mystical Fire',
+  '- Wish',
+  '',
+  'Cinccino @ Cinccinite',
+  'Ability: Skill Link',
+  'EVs: 252 Atk / 4 SpD / 252 Spe',
+  'Jolly Nature',
+  '- Tail Slap',
+  '- Rock Blast',
+  '- Bullet Seed',
+  '- Play Rough',
+].join('\n');
+
+function openBossModal(initialGame = null) {
+  if (initialGame && ['all', 'Reborn', 'Rejuvenation', 'Desolation'].includes(initialGame)) {
+    bossFilterGame = initialGame;
+  }
+  bossShowAll = false;
+  $$('#boss-game-tabs button').forEach(b => b.classList.toggle('on', b.dataset.game === bossFilterGame));
+  $$('#boss-cat-tabs button').forEach(b => b.classList.toggle('on', b.dataset.cat === bossFilterCat));
+  syncLevelModeUI(currentRoom?.levelMode || homeLevelMode);
+  $('#modal-bosses').classList.remove('hidden');
+  renderBossGrid();
+}
+
+function launchBossAction(bossId, quickStart) {
+  const b = BOSSES_BY_ID.get(bossId);
+  if (!b) return;
+  $('#modal-bosses').classList.add('hidden');
+  homeBossId = b.id;
+  syncHomePickerUI();
+
+  if (currentRoom && currentRoom.status === 'lobby' && currentRoom.mode === 'ai' && currentRoom.isHost) {
+    send({t: 'setBoss', bossId: b.id, levelMode: homeLevelMode});
+    if (quickStart) setTimeout(() => send({t: 'start'}), 30);
+    return;
+  }
+
+  lastQuickMode = quickStart
+    ? {mode: 'ai', fillAI: false, bossId: b.id, dexMode: 'natdex', levelMode: homeLevelMode}
+    : null;
+  send({
+    t: 'create',
+    mode: 'ai',
+    difficulty: homeDifficulty,
+    dexMode: 'natdex',
+    levelMode: homeLevelMode,
+    fieldFilter: $('#home-field-filter').value,
+    bossId: b.id,
+    customTeamPaste: savedCustomPaste || undefined,
+    quickStart,
+  });
+}
+
+function renderBossGrid() {
+  const grid = $('#boss-grid');
+  if (!grid) return;
+  const q = ($('#boss-search')?.value || '').trim().toLowerCase();
+
+  const filtered = ALL_BOSSES.filter(b => {
+    if (bossFilterGame !== 'all' && b.game !== bossFilterGame) return false;
+    if (bossFilterCat !== 'all' && b.category !== bossFilterCat) return false;
+    if (!q) return true;
+    const hay = `${b.displayName} ${b.section} ${b.fieldName} ${b.ace} ${b.game}`.toLowerCase();
+    return hay.includes(q);
+  });
+
+  grid.innerHTML = '';
+  if (!filtered.length) {
+    grid.innerHTML = '<div style="padding:18px;color:var(--text-secondary);grid-column:1/-1;">No matching story fights found.</div>';
+    return;
+  }
+
+  const limit = bossShowAll || q ? filtered.length : Math.min(filtered.length, 150);
+  const shown = filtered.slice(0, limit);
+
+  for (const b of shown) {
+    const beaten = beatenBosses.has(b.id);
+    const card = document.createElement('div');
+    card.className = 'boss-card' + (beaten ? ' beaten' : '');
+    const catLabel = CAT_LABELS[b.category] || 'Boss';
+    const levelNote = homeLevelMode === 'canonical' ? `Cap Lv.${b.cap}` : `Lv.50 (Cap ${b.cap})`;
+
+    card.innerHTML = `
+      <div class="boss-card-top">
+        <span class="game-tag ${esc(b.game)}">${esc(b.game)}</span>
+        <span class="boss-cat-tag">${esc(catLabel)}</span>
+        ${beaten ? '<span class="boss-beaten-tag">✓ Defeated</span>' : ''}
+        <span class="boss-cap-tag">${esc(levelNote)}</span>
+      </div>
+      <h4>${esc(b.displayName)}</h4>
+      <div class="boss-card-sec">${esc(b.section)}</div>
+      <div class="boss-field-line">◆ ${esc(b.fieldName)}</div>
+      <div class="boss-card-foot">
+        <div class="boss-ace">
+          <img alt="${esc(b.ace)}">
+          <span>${b.monCount || 6} Pokémon · Ace: <b>${esc(b.ace)}</b></span>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="ghost small" data-stage="${esc(b.id)}">Stage</button>
+          <button type="button" class="primary small" data-fight="${esc(b.id)}">Battle</button>
+        </div>
+      </div>
+    `;
+    staticSprite(card.querySelector('img'), b.ace);
+    grid.appendChild(card);
+  }
+
+  if (filtered.length > limit) {
+    const moreWrap = document.createElement('div');
+    moreWrap.style.cssText = 'grid-column:1/-1;text-align:center;padding:12px 0;';
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'ghost';
+    moreBtn.textContent = `Show All ${filtered.length} Matching Fights`;
+    moreBtn.addEventListener('click', () => {
+      bossShowAll = true;
+      renderBossGrid();
+    });
+    moreWrap.appendChild(moreBtn);
+    grid.appendChild(moreWrap);
+  }
+
+  grid.querySelectorAll('[data-stage]').forEach(btn => {
+    btn.addEventListener('click', () => launchBossAction(btn.dataset.stage, false));
+  });
+  grid.querySelectorAll('[data-fight]').forEach(btn => {
+    btn.addEventListener('click', () => launchBossAction(btn.dataset.fight, true));
+  });
+}
+
+function openTeamModal() {
+  const inp = $('#team-paste-input');
+  if (inp) inp.value = savedCustomPaste || '';
+  $('#modal-team').classList.remove('hidden');
+  if (savedCustomPaste) {
+    send({t: 'validateTeam', paste: savedCustomPaste});
+  } else {
+    $('#team-paste-preview').innerHTML = '<span style="color:var(--text-secondary);font-size:0.8rem;">No custom team saved — currently dealing random field-matched rosters.</span>';
+  }
+}
+
+function renderTeamPastePreview(preview) {
+  const wrap = $('#team-paste-preview');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  for (const mon of preview || []) {
+    rememberSprite(mon.species, mon.spriteid);
+    const chip = document.createElement('div');
+    chip.className = 'team-prev-chip';
+    chip.innerHTML = `<img alt="${esc(mon.species)}"><span><b>${esc(mon.species)}</b>${mon.item ? ` @ ${esc(mon.item)}` : ''}</span>`;
+    staticSprite(chip.querySelector('img'), mon.species);
+    wrap.appendChild(chip);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Connection (WebSocket server, or in-browser engine + peer-to-peer)
 // ---------------------------------------------------------------------------
 conn = new Connection(
@@ -394,6 +673,8 @@ function send(msg) {
   conn.send(msg);
 }
 
+let savePasteAfterValidate = false;
+
 function onServerMessage(msg) {
   switch (msg.t) {
   case 'welcome': {
@@ -408,8 +689,10 @@ function onServerMessage(msg) {
       $('#input-name').value = myName;
     }
     if (Array.isArray(msg.bosses) && msg.bosses.length) {
-      ALL_BOSSES = msg.bosses;
-      populateBossSelect($('#home-boss-select'), ALL_BOSSES, homeBossId);
+      indexBosses(msg.bosses);
+    }
+    if (savedCustomPaste && !savedCustomCount) {
+      send({t: 'validateTeam', paste: savedCustomPaste});
     }
     if (pendingUrlRoom && !IS_STATIC) {
       const code = pendingUrlRoom;
@@ -420,6 +703,45 @@ function onServerMessage(msg) {
           send({t: 'join', code});
         }
       }, 40);
+    }
+    break;
+  }
+  case 'teamValidated': {
+    const shouldCommit = savePasteAfterValidate;
+    savePasteAfterValidate = false;
+    if (!msg.ok) {
+      const wrap = $('#team-paste-preview');
+      if (wrap) wrap.innerHTML = `<span style="color:var(--accent-ember);font-size:0.82rem;">${esc(msg.error)}</span>`;
+      if (shouldCommit) toast(msg.error || 'Invalid team paste.', true);
+      return;
+    }
+    savedCustomPaste = msg.paste;
+    savedCustomCount = (msg.preview || []).length;
+    try {
+      localStorage.setItem('fc_custom_paste', savedCustomPaste);
+    } catch {}
+    renderTeamPastePreview(msg.preview || []);
+    syncHomePickerUI();
+    if (shouldCommit) {
+      if (currentRoom && currentRoom.status === 'lobby') {
+        send({t: 'setCustomTeam', paste: savedCustomPaste});
+      }
+      toast(`Saved custom team (${savedCustomCount} Pokémon).`);
+      $('#modal-team').classList.add('hidden');
+    }
+    break;
+  }
+  case 'teamSaved':
+    syncHomePickerUI();
+    break;
+  case 'teamExport': {
+    const inp = $('#team-paste-input');
+    if (inp && msg.paste) {
+      inp.value = msg.paste;
+      navigator.clipboard?.writeText(msg.paste).then(
+        () => toast('Exported current team to paste box & clipboard.'),
+        () => toast('Exported current team to paste box.')
+      );
     }
     break;
   }
@@ -560,8 +882,10 @@ function renderMonTooltipHTML(mon) {
 }
 
 function renderLobby(room) {
+  const bossObj = room.boss || (room.bossId ? BOSSES_BY_ID.get(room.bossId) : null);
+  const lvlTag = bossObj && room.levelMode === 'canonical' ? `Story Cap Lv.${bossObj.cap}` : 'Lv.50';
   const modeLabels = {
-    ai: room.bossId ? 'Solo Lv.50 · Boss Challenge' : 'Solo Lv.50 · VS AI Trainer',
+    ai: bossObj ? `${bossObj.game} · ${bossObj.section} (${lvlTag})` : `Solo ${lvlTag} · VS AI Trainer`,
     pvp: 'Online Lv.50 · Head-to-Head',
     ffa: '1v1v1v1 Lv.50 · Four-Trainer Free-For-All',
   };
@@ -573,13 +897,23 @@ function renderLobby(room) {
   fieldCard.innerHTML = renderFieldCardHTML(fullField);
   applyFieldCardVars(fieldCard, fullField);
 
-  const bossList = room.bossList || ALL_BOSSES;
-  if (Array.isArray(bossList) && bossList.length) {
-    ALL_BOSSES = bossList;
-    populateBossSelect($('#sel-boss'), ALL_BOSSES, room.bossId || 'none');
-  }
   $('#row-boss')?.classList.toggle('hidden', room.mode !== 'ai');
-  if ($('#sel-boss')) $('#sel-boss').disabled = !room.isHost;
+  const bossLbl = $('#lobby-boss-label');
+  if (bossLbl) bossLbl.textContent = bossObj ? bossObj.displayName : 'Random Trainer';
+  $('#btn-lobby-boss-clear')?.classList.toggle('hidden', !bossObj || !room.isHost);
+  if ($('#btn-lobby-bosses')) $('#btn-lobby-bosses').disabled = !room.isHost;
+
+  $('#row-level-mode')?.classList.toggle('hidden', !bossObj);
+  $$('#seg-lobby-level button').forEach(b => {
+    b.classList.toggle('on', b.dataset.v === (room.levelMode || 'lv50'));
+    b.disabled = !room.isHost;
+  });
+
+  $('#row-dex-mode')?.classList.toggle('hidden', !!bossObj);
+  $$('#seg-lobby-dex button').forEach(b => {
+    b.classList.toggle('on', b.dataset.v === (room.dexMode || 'champions'));
+    b.disabled = !room.isHost;
+  });
 
   populateFieldSelect($('#sel-field'), room.fieldList, room.fieldChoice);
   $('#sel-filter').value = room.fieldFilter || 'all';
@@ -601,6 +935,7 @@ function renderLobby(room) {
   $('#btn-reroll-field').disabled = !room.isHost;
   $('#btn-reroll-teams').disabled = !room.isHost;
   $('#btn-reroll-mine').disabled = room.you < 0;
+  if ($('#btn-lobby-team')) $('#btn-lobby-team').disabled = room.you < 0;
 
   const startBtn = $('#btn-start');
   if (!room.isHost) {
@@ -634,7 +969,8 @@ function renderLobby(room) {
       const badges = [];
       if (isYou) badges.push('<span class="badge you-tag">You</span>');
       if (seat.isHost) badges.push('<span class="badge host">Host</span>');
-      if (seat.isAI) badges.push('<span class="badge ai">AI</span>');
+      if (seat.isAI) badges.push(`<span class="badge ai">${bossObj ? 'Story Boss' : 'AI'}</span>`);
+      if (seat.hasCustomTeam) badges.push('<span class="badge">Custom Paste</span>');
       if (!seat.connected) badges.push('<span class="badge off">Offline</span>');
       const canKick = room.isHost && !seat.isHost && room.mode !== 'ai';
 
@@ -763,6 +1099,7 @@ function onBattleUpdate(msg) {
     $('#battle-log').innerHTML = '';
     $('#slots').innerHTML = '';
     megaArmed = false;
+    zArmed = false;
   }
 
   showScreen('battle');
@@ -977,12 +1314,13 @@ async function drainQueue() {
         break;
       }
 
-      case 'mega': {
+      case 'mega':
+      case 'zpower': {
         const sid = formatter.sideOf(ev.ident);
         const pt = slotCenterInArena(sid);
         triggerSpriteAnim(sid, 'anim-mega');
-        arenaFX.burstAt(pt.x, pt.y, '#f5a623', 30, 190);
-        arenaFX.popup(pt.x, pt.y - 34, 'MEGA EVOLVE!', '#ffd43b');
+        arenaFX.burstAt(pt.x, pt.y, ev.type === 'zpower' ? '#fde047' : '#f5a623', 32, 200);
+        arenaFX.popup(pt.x, pt.y - 34, ev.type === 'zpower' ? 'Z-POWER!' : 'MEGA EVOLVE!', '#ffd43b');
         sfx.play('mega');
         await sleep(520);
         break;
@@ -1336,10 +1674,13 @@ function formatEffBadge(eff) {
 
 function submitMoveWithTarget(moveIndex, targetSeat = null) {
   const mega = megaArmed;
+  const activeReq = latestRequest?.active?.[0];
+  const zmove = zArmed && !!activeReq?.moves?.[moveIndex]?.zMove;
   megaArmed = false;
+  zArmed = false;
   pendingTargetMove = null;
   clearTargetHighlights();
-  const choice = {kind: 'move', index: moveIndex, mega};
+  const choice = {kind: 'move', index: moveIndex, mega, zmove};
   if (targetSeat !== null && targetSeat !== undefined) choice.target = targetSeat;
   send({t: 'choose', choice});
   renderControlsWaiting('Waiting for other trainers…', true);
@@ -1375,11 +1716,13 @@ function renderControls() {
         <h4>${esc(winnerText)}</h4>
         <div class="btn-row">
           <button type="button" class="primary" id="btn-ctrl-rematch">Play Again</button>
+          <button type="button" class="ghost" id="btn-ctrl-bosses">Story Bosses</button>
           <button type="button" class="ghost" id="btn-ctrl-home">Return Home</button>
         </div>
       </div>
     `;
     $('#btn-ctrl-rematch')?.addEventListener('click', handlePlayAgain);
+    $('#btn-ctrl-bosses')?.addEventListener('click', () => openBossModal());
     $('#btn-ctrl-home')?.addEventListener('click', () => send({t: 'leave'}));
     return;
   }
@@ -1406,7 +1749,9 @@ function renderControls() {
   const activeReq = req.active?.[0];
   const activeMon = mySide?.active;
   const canMega = !!activeReq?.canMegaEvo;
+  const canZ = Array.isArray(activeReq?.canZMove) && activeReq.canZMove.some(Boolean);
   if (!canMega) megaArmed = false;
+  if (!canZ) zArmed = false;
 
   let html = '<div class="prompt">';
   if (forceSwitch) {
@@ -1414,12 +1759,23 @@ function renderControls() {
   } else {
     html += `<h4>What will ${esc(activeMon?.name || activeMon?.species || 'your Pokémon')} do?</h4>`;
   }
-  if (canMega && !forceSwitch) {
-    html += `
-      <button type="button" class="mega-toggle ${megaArmed ? 'on' : ''}" id="btn-mega-toggle" title="Hotkey: M">
-        <span>◆ MEGA EVOLVE [M]</span>
-      </button>
-    `;
+  if (!forceSwitch && (canMega || canZ)) {
+    html += '<div class="btn-row">';
+    if (canMega) {
+      html += `
+        <button type="button" class="mega-toggle ${megaArmed ? 'on' : ''}" id="btn-mega-toggle" title="Hotkey: M">
+          <span>◆ MEGA EVOLVE [M]</span>
+        </button>
+      `;
+    }
+    if (canZ) {
+      html += `
+        <button type="button" class="z-toggle ${zArmed ? 'on' : ''}" id="btn-z-toggle" title="Hotkey: Z">
+          <span>◆ Z-POWER [Z]</span>
+        </button>
+      `;
+    }
+    html += '</div>';
   }
   html += '</div>';
 
@@ -1448,13 +1804,17 @@ function renderControls() {
   if (!forceSwitch && activeReq?.moves) {
     html += '<div class="moves">';
     activeReq.moves.forEach((m, idx) => {
-      const effType = m.field?.type || m.type || 'Normal';
+      const zInfo = zArmed && m.zMove ? m.zMove : null;
+      const effType = zInfo ? zInfo.type : (m.field?.type || m.type || 'Normal');
       const color = TYPE_COLORS[effType] || '#687082';
-      const disabled = !!m.disabled || m.pp === 0;
+      const disabled = zArmed ? !zInfo : (!!m.disabled || m.pp === 0);
       const selected = pendingTargetMove?.index === idx;
+      const dispName = zInfo ? zInfo.name : (m.name || m.move);
 
       const fxBadges = [];
-      if (m.field?.fails) {
+      if (zInfo) {
+        fxBadges.push(`<span class="fxb up">${zInfo.basePower} BP Z-MOVE</span>`);
+      } else if (m.field?.fails) {
         fxBadges.push('<span class="fxb fail">FAILS</span>');
       } else {
         const effBadge = formatEffBadge(m.eff);
@@ -1469,24 +1829,26 @@ function renderControls() {
         }
       }
 
-      const typeChangedNote = m.field?.type && m.field.type !== m.type
+      const typeChangedNote = !zInfo && m.field?.type && m.field.type !== m.type
         ? ` (was ${esc(m.type)})`
         : '';
-      const bpLabel = m.category === 'Status' ? 'Status' : `${m.basePower || '—'} BP · ${m.category}`;
-      const accLabel = m.accuracy === true ? '—' : `${m.accuracy}%`;
+      const bpLabel = zInfo
+        ? `${zInfo.basePower} BP · Z-Power`
+        : (m.category === 'Status' ? 'Status' : `${m.basePower || '—'} BP · ${m.category}`);
+      const accLabel = zInfo || m.accuracy === true ? '—' : `${m.accuracy}%`;
 
       html += `
-        <button type="button" class="move-btn ${selected ? 'selected' : ''}" data-move-idx="${idx}" style="--tc:${color}" ${disabled ? 'disabled' : ''}>
-          <span class="mn"><span class="move-kbd">[${idx + 1}]</span>${esc(m.name || m.move)}</span>
+        <button type="button" class="move-btn ${selected ? 'selected' : ''} ${zInfo ? 'z-ready' : ''}" data-move-idx="${idx}" style="--tc:${color}" ${disabled ? 'disabled' : ''}>
+          <span class="mn"><span class="move-kbd">[${idx + 1}]</span>${esc(dispName)}</span>
           <span class="ms">
             <span>${esc(effType)}</span>
             <span>·</span>
-            <span>PP ${m.pp ?? '—'}/${m.maxpp ?? '—'}</span>
+            <span>${zInfo ? 'Z-CRYSTAL' : `PP ${m.pp ?? '—'}/${m.maxpp ?? '—'}`}</span>
           </span>
           <div class="fx">${fxBadges.join('')}</div>
           <div class="move-tip">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-              <b>${esc(m.name || m.move)}</b>
+              <b>${esc(dispName)}</b>
               <span>${typeBadge(effType)}</span>
             </div>
             <div style="color:var(--text-secondary);font-size:0.73rem;margin-bottom:5px;">
@@ -1540,9 +1902,15 @@ function renderControls() {
     });
   });
 
-  // Mega toggle
+  // Mega & Z toggles
   $('#btn-mega-toggle')?.addEventListener('click', () => {
     megaArmed = !megaArmed;
+    if (megaArmed) zArmed = false;
+    renderControls();
+  });
+  $('#btn-z-toggle')?.addEventListener('click', () => {
+    zArmed = !zArmed;
+    if (zArmed) megaArmed = false;
     renderControls();
   });
 
@@ -1657,6 +2025,15 @@ function maybeShowEndModal() {
 
   const myTrainerName = mySeat >= 0 ? latestState.sides[mySeat]?.name : null;
   const won = myTrainerName && latestState.winner === myTrainerName;
+  let bossClearedNote = '';
+  if (won && currentRoom?.bossId) {
+    const newlyBeaten = markBossBeaten(currentRoom.bossId);
+    const bossObj = currentRoom.boss || BOSSES_BY_ID.get(currentRoom.bossId);
+    bossClearedNote = newlyBeaten
+      ? ` ★ Story Boss Cleared (${beatenBosses.size}/${ALL_BOSSES.length || 594})!`
+      : ` ★ Defeated ${bossObj?.displayName || 'Story Boss'}!`;
+  }
+
   $('#end-title').textContent = !latestState.winner || latestState.winner === 'Nobody'
     ? 'Draw'
     : mySeat < 0
@@ -1665,7 +2042,7 @@ function maybeShowEndModal() {
         ? 'Victory!'
         : 'Defeat';
   $('#end-sub').textContent = latestState.winner && latestState.winner !== 'Nobody'
-    ? `${latestState.winner} claimed the match on ${displayedField?.name || 'the battlefield'} in ${latestState.turn} turns.`
+    ? `${latestState.winner} claimed the match on ${displayedField?.name || 'the battlefield'} in ${latestState.turn} turns.${bossClearedNote}`
     : 'No Pokémon remained standing.';
 
   const againBtn = $('#btn-end-again');
@@ -1686,9 +2063,12 @@ function handlePlayAgain() {
       t: 'create',
       mode: lastQuickMode.mode,
       difficulty: currentRoom?.difficulty || homeDifficulty,
+      dexMode: currentRoom?.dexMode || lastQuickMode.dexMode || homeDexMode,
+      levelMode: currentRoom?.levelMode || lastQuickMode.levelMode || homeLevelMode,
       fillAI: lastQuickMode.fillAI,
       fieldFilter: $('#home-field-filter').value,
       bossId: currentRoom?.bossId || lastQuickMode.bossId || undefined,
+      customTeamPaste: savedCustomPaste || undefined,
       quickStart: true,
     });
   } else if (currentRoom?.isHost) {
@@ -1698,8 +2078,11 @@ function handlePlayAgain() {
       t: 'create',
       mode: 'ai',
       difficulty: homeDifficulty,
+      dexMode: homeDexMode,
+      levelMode: homeLevelMode,
       fieldFilter: $('#home-field-filter').value,
       bossId: homeBossId !== 'none' ? homeBossId : undefined,
+      customTeamPaste: savedCustomPaste || undefined,
       quickStart: true,
     });
   }
@@ -1768,7 +2151,7 @@ function bindEvents() {
     }
   });
 
-  // Home difficulty segmented control & Boss Challenge selector
+  // Home difficulty, Dex pool, Level mode & Boss/Team pickers
   $$('#seg-difficulty button').forEach(btn => {
     btn.addEventListener('click', () => {
       homeDifficulty = btn.dataset.v;
@@ -1777,22 +2160,121 @@ function bindEvents() {
     });
   });
 
-  $('#home-boss-select')?.addEventListener('change', e => {
-    homeBossId = e.target.value || 'none';
-    updateHomeDiffHint();
+  $('#home-dex-mode')?.addEventListener('change', e => {
+    homeDexMode = e.target.value === 'natdex' ? 'natdex' : 'champions';
+    syncHomePickerUI();
   });
-  updateHomeDiffHint();
+
+  $$('#seg-home-level button, #seg-modal-level button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      syncLevelModeUI(btn.dataset.v);
+      if (!$('#modal-bosses').classList.contains('hidden')) renderBossGrid();
+    });
+  });
+
+  $('#btn-clear-home-boss')?.addEventListener('click', () => {
+    homeBossId = 'none';
+    syncHomePickerUI();
+  });
+
+  // Story Boss Campaign Modal triggers & filters
+  $('#btn-top-campaign')?.addEventListener('click', () => openBossModal());
+  $('#btn-open-bosses')?.addEventListener('click', () => openBossModal());
+  $('#btn-lobby-bosses')?.addEventListener('click', () => openBossModal());
+  $('#btn-lobby-boss-clear')?.addEventListener('click', () => send({t: 'setBoss', bossId: 'none'}));
+  $('#btn-bosses-close')?.addEventListener('click', () => $('#modal-bosses').classList.add('hidden'));
+  $('#modal-bosses')?.addEventListener('click', e => {
+    if (e.target === $('#modal-bosses')) $('#modal-bosses').classList.add('hidden');
+  });
+
+  $$('#boss-game-tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      bossFilterGame = btn.dataset.game;
+      bossShowAll = false;
+      $$('#boss-game-tabs button').forEach(b => b.classList.toggle('on', b === btn));
+      renderBossGrid();
+    });
+  });
+  $$('#boss-cat-tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      bossFilterCat = btn.dataset.cat;
+      bossShowAll = false;
+      $$('#boss-cat-tabs button').forEach(b => b.classList.toggle('on', b === btn));
+      renderBossGrid();
+    });
+  });
+  $('#boss-search')?.addEventListener('input', () => {
+    bossShowAll = false;
+    renderBossGrid();
+  });
+
+  // Custom Showdown Team Modal triggers & actions
+  $('#btn-top-team')?.addEventListener('click', openTeamModal);
+  $('#btn-open-team')?.addEventListener('click', openTeamModal);
+  $('#btn-lobby-team')?.addEventListener('click', openTeamModal);
+  $('#btn-boss-modal-team')?.addEventListener('click', openTeamModal);
+  $('#btn-team-close')?.addEventListener('click', () => $('#modal-team').classList.add('hidden'));
+  $('#modal-team')?.addEventListener('click', e => {
+    if (e.target === $('#modal-team')) $('#modal-team').classList.add('hidden');
+  });
+
+  $('#btn-team-sample')?.addEventListener('click', () => {
+    $('#team-paste-input').value = SAMPLE_SHOWDOWN_PASTE;
+    savePasteAfterValidate = false;
+    send({t: 'validateTeam', paste: SAMPLE_SHOWDOWN_PASTE});
+  });
+  $('#btn-team-export')?.addEventListener('click', () => {
+    if (currentRoom && currentRoom.status === 'lobby') {
+      send({t: 'exportTeam'});
+    } else {
+      const val = ($('#team-paste-input').value || '').trim();
+      if (!val) {
+        toast('Stage a Lobby first to export a random team, or paste a team above.', true);
+        return;
+      }
+      navigator.clipboard?.writeText(val).then(
+        () => toast('Copied team paste to clipboard.'),
+        () => toast('Select & copy the paste box above.')
+      );
+    }
+  });
+  $('#btn-team-clear')?.addEventListener('click', () => {
+    savedCustomPaste = '';
+    savedCustomCount = 0;
+    try { localStorage.removeItem('fc_custom_paste'); } catch {}
+    $('#team-paste-input').value = '';
+    $('#team-paste-preview').innerHTML = '<span style="color:var(--text-secondary);font-size:0.8rem;">Cleared custom team — using random field-matched rosters.</span>';
+    syncHomePickerUI();
+    if (currentRoom && currentRoom.status === 'lobby') {
+      send({t: 'setCustomTeam', paste: ''});
+    }
+    toast('Switched back to random field-matched rosters.');
+  });
+  $('#btn-team-save')?.addEventListener('click', () => {
+    const paste = ($('#team-paste-input').value || '').trim();
+    if (!paste) {
+      toast('Paste a Showdown team (1–6 Pokémon) first.', true);
+      return;
+    }
+    savePasteAfterValidate = true;
+    send({t: 'validateTeam', paste});
+  });
+
+  syncHomePickerUI();
 
   // Home Match Launchers
   $('#btn-ai-quick').addEventListener('click', () => {
     const bossId = homeBossId !== 'none' ? homeBossId : undefined;
-    lastQuickMode = {mode: 'ai', fillAI: false, bossId};
+    lastQuickMode = {mode: 'ai', fillAI: false, bossId, dexMode: homeDexMode, levelMode: homeLevelMode};
     send({
       t: 'create',
       mode: 'ai',
       difficulty: homeDifficulty,
+      dexMode: homeDexMode,
+      levelMode: homeLevelMode,
       fieldFilter: $('#home-field-filter').value,
       bossId,
+      customTeamPaste: savedCustomPaste || undefined,
       quickStart: true,
     });
   });
@@ -1804,8 +2286,11 @@ function bindEvents() {
       t: 'create',
       mode: 'ai',
       difficulty: homeDifficulty,
+      dexMode: homeDexMode,
+      levelMode: homeLevelMode,
       fieldFilter: $('#home-field-filter').value,
       bossId,
+      customTeamPaste: savedCustomPaste || undefined,
       quickStart: false,
     });
   });
@@ -1816,18 +2301,22 @@ function bindEvents() {
       t: 'create',
       mode: 'pvp',
       difficulty: homeDifficulty,
+      dexMode: homeDexMode,
       fieldFilter: $('#home-field-filter').value,
+      customTeamPaste: savedCustomPaste || undefined,
     });
   });
 
   $('#btn-ffa-quick').addEventListener('click', () => {
-    lastQuickMode = {mode: 'ffa', fillAI: true};
+    lastQuickMode = {mode: 'ffa', fillAI: true, dexMode: homeDexMode};
     send({
       t: 'create',
       mode: 'ffa',
       difficulty: homeDifficulty,
+      dexMode: homeDexMode,
       fillAI: true,
       fieldFilter: $('#home-field-filter').value,
+      customTeamPaste: savedCustomPaste || undefined,
       quickStart: true,
     });
   });
@@ -1838,8 +2327,10 @@ function bindEvents() {
       t: 'create',
       mode: 'ffa',
       difficulty: homeDifficulty,
+      dexMode: homeDexMode,
       fillAI: $('#chk-ffa-ai').checked,
       fieldFilter: $('#home-field-filter').value,
+      customTeamPaste: savedCustomPaste || undefined,
       quickStart: false,
     });
   });
@@ -1894,9 +2385,6 @@ function bindEvents() {
 
   $('#btn-leave').addEventListener('click', () => send({t: 'leave'}));
 
-  $('#sel-boss')?.addEventListener('change', () => {
-    send({t: 'setBoss', bossId: $('#sel-boss').value});
-  });
   $('#sel-field').addEventListener('change', () => {
     send({t: 'setField', id: $('#sel-field').value, filter: $('#sel-filter').value});
   });
@@ -1907,6 +2395,15 @@ function bindEvents() {
   $$('#seg-lobby-difficulty button').forEach(btn => {
     btn.addEventListener('click', () => send({t: 'setDifficulty', value: btn.dataset.v}));
   });
+  $$('#seg-lobby-level button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      syncLevelModeUI(btn.dataset.v);
+      send({t: 'setLevelMode', value: btn.dataset.v});
+    });
+  });
+  $$('#seg-lobby-dex button').forEach(btn => {
+    btn.addEventListener('click', () => send({t: 'setDexMode', value: btn.dataset.v}));
+  });
 
   $('#chk-open').addEventListener('change', () => {
     send({t: 'setOpenSheets', value: $('#chk-open').checked});
@@ -1914,7 +2411,15 @@ function bindEvents() {
 
   $('#btn-reroll-field').addEventListener('click', () => send({t: 'reroll', what: 'field'}));
   $('#btn-reroll-teams').addEventListener('click', () => send({t: 'reroll', what: 'teams'}));
-  $('#btn-reroll-mine').addEventListener('click', () => send({t: 'reroll', what: 'myteam'}));
+  $('#btn-reroll-mine').addEventListener('click', () => {
+    if (savedCustomPaste) {
+      savedCustomPaste = '';
+      savedCustomCount = 0;
+      try { localStorage.removeItem('fc_custom_paste'); } catch {}
+      syncHomePickerUI();
+    }
+    send({t: 'reroll', what: 'myteam'});
+  });
   $('#btn-start').addEventListener('click', () => send({t: 'start'}));
 
   // Chat Forms
@@ -1973,10 +2478,14 @@ function bindEvents() {
     send({t: 'leave'});
   });
 
-  // Keyboard shortcuts: Escape closes modals/targeting; 1-4 selects moves; M toggles Mega
+  // Keyboard shortcuts: Escape closes modals/targeting; 1-4 selects moves; M toggles Mega; Z toggles Z-Power
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
-      if (!$('#modal-guide').classList.contains('hidden')) {
+      if (!$('#modal-team')?.classList.contains('hidden')) {
+        $('#modal-team').classList.add('hidden');
+      } else if (!$('#modal-bosses')?.classList.contains('hidden')) {
+        $('#modal-bosses').classList.add('hidden');
+      } else if (!$('#modal-guide').classList.contains('hidden')) {
         $('#modal-guide').classList.add('hidden');
       } else if (pendingTargetMove !== null) {
         pendingTargetMove = null;
@@ -1987,7 +2496,10 @@ function bindEvents() {
 
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
-    if ($('#screen-battle').classList.contains('hidden') || !$('#modal-guide').classList.contains('hidden')) return;
+    const anyModalOpen = !$('#modal-guide').classList.contains('hidden')
+      || !$('#modal-bosses')?.classList.contains('hidden')
+      || !$('#modal-team')?.classList.contains('hidden');
+    if ($('#screen-battle').classList.contains('hidden') || anyModalOpen) return;
 
     if (['1', '2', '3', '4'].includes(e.key)) {
       const idx = Number(e.key) - 1;
@@ -2001,6 +2513,12 @@ function bindEvents() {
       if (megaBtn && !megaBtn.disabled) {
         e.preventDefault();
         megaBtn.click();
+      }
+    } else if (e.key === 'z' || e.key === 'Z') {
+      const zBtn = $('#btn-z-toggle');
+      if (zBtn && !zBtn.disabled) {
+        e.preventDefault();
+        zBtn.click();
       }
     }
   });

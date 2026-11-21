@@ -20,6 +20,8 @@
       </a>
       <nav class="topbar-right" aria-label="Global actions">
         <button class="ghost small" id="btn-sfx" type="button" title="Toggle battle sound effects">SFX: On</button>
+        <button class="ghost small" id="btn-top-campaign" type="button">Campaign</button>
+        <button class="ghost small" id="btn-top-team" type="button">Custom Team</button>
         <button class="ghost small" id="btn-encyclopedia" type="button">Field Guide</button>
         <button class="name-chip" id="name-chip" type="button" title="Connection status &amp; trainer name">
           <span class="dot" aria-hidden="true"></span>
@@ -34,14 +36,14 @@
         <div class="home-wrap">
           <div class="hero">
             <div>
-              <h1 id="home-heading">Lv.50 Champions rosters.<br><em>Dynamic Reborn-verse fields.</em></h1>
+              <h1 id="home-heading">Every Major Boss &amp; Field.<br><em>Reborn · Rejuvenation · Desolation.</em></h1>
               <p class="lede">
-                Every match deals six-Pokémon Level 50 teams from the <strong>Pokémon Champions</strong> roster—complete with Mega Evolution—onto a live illustrated battlefield from <strong>Pokémon Reborn</strong>, <strong>Rejuvenation</strong>, and <strong>Desolation</strong>. Fields amplify moves, add secondary types, activate terrain abilities, and transform mid-fight.
+                Battle with <strong>Lv.50 Champions</strong> or full <strong>Gen 1–9 National Dex + Aevian</strong> rosters—complete with Field Seeds, Crests, Mega Evolution, and Z-Moves—or run simulation battles against <strong>all 594 preloaded major story fights</strong> on their canonical illustrated fields.
               </p>
             </div>
 
             <div class="launcher-bar" aria-label="Trainer profile and room code join">
-              <div class="launcher-bar-row">
+              <div class="launcher-bar-row three">
                 <div class="field-group">
                   <label for="input-name">Trainer Callsign</label>
                   <input id="input-name" type="text" maxlength="18" placeholder="Enter name" autocomplete="nickname">
@@ -55,6 +57,13 @@
                     <option value="Desolation">Pokémon Desolation</option>
                   </select>
                 </div>
+                <div class="field-group">
+                  <label for="home-dex-mode">Random Roster Pool</label>
+                  <select id="home-dex-mode">
+                    <option value="champions">Champions Dex (Lv.50)</option>
+                    <option value="natdex">National Dex + Aevian</option>
+                  </select>
+                </div>
               </div>
               <form class="join-inline" id="form-join-room">
                 <input id="input-code" type="text" maxlength="5" placeholder="ROOM CODE" class="code-input" aria-label="5-character room code" autocomplete="off">
@@ -66,11 +75,11 @@
           <div class="mode-grid">
             <article class="mode-panel" id="panel-mode-ai">
               <div class="mode-meta">
-                <span>01 · Solo Match</span>
-                <span class="format-pill">Lv.50 · 6v6 Singles</span>
+                <span>01 · Solo &amp; Campaign</span>
+                <span class="format-pill" id="home-ai-format-pill">Lv.50 · 6v6 Singles</span>
               </div>
-              <h2>VS AI Trainer</h2>
-              <p>Face iconic Reborn, Rejuvenation, and Desolation trainers whose hidden teams and field matchups scale with your chosen tier—or challenge a signature Boss Preset.</p>
+              <h2>VS AI &amp; Story Bosses</h2>
+              <p>Face field-matched AI trainers with hidden sheets, or simulate any of the 594 major fights from Reborn, Rejuvenation, and Desolation with random or custom Showdown teams.</p>
               <div class="mode-options">
                 <span class="opt-label">Difficulty</span>
                 <div class="seg" id="seg-difficulty" role="group" aria-label="AI Difficulty">
@@ -80,12 +89,36 @@
                 </div>
                 <div class="diff-hint" id="home-diff-hint">Equal field-synergy split on both rosters · AI items &amp; moves hidden</div>
               </div>
-              <div class="boss-select-row">
-                <label for="home-boss-select">Boss Challenge</label>
-                <select id="home-boss-select" aria-label="Optional preloaded boss fight">
-                  <option value="none">Random Trainer &amp; Field</option>
-                </select>
+
+              <div class="sim-picker-box">
+                <div class="sim-picker-row">
+                  <div class="sim-picker-info">
+                    <span class="sim-kicker">Target Opponent</span>
+                    <strong id="home-boss-summary">Random Trainer &amp; Field</strong>
+                  </div>
+                  <div class="btn-row">
+                    <button class="ghost small hidden" id="btn-clear-home-boss" type="button">Reset</button>
+                    <button class="ghost small accent-border" id="btn-open-bosses" type="button">Story Bosses (594)</button>
+                  </div>
+                </div>
+
+                <div class="sim-picker-row hidden" id="row-home-level-mode">
+                  <span class="sim-kicker">Boss Level Scaling</span>
+                  <div class="seg small-seg" id="seg-home-level" role="group" aria-label="Boss Level Mode">
+                    <button type="button" data-v="lv50" class="on" title="Normalize both rosters to Level 50">Lv.50 Standard</button>
+                    <button type="button" data-v="canonical" title="Use exact canonical story levels &amp; level cap">Story Level Cap</button>
+                  </div>
+                </div>
+
+                <div class="sim-picker-row">
+                  <div class="sim-picker-info">
+                    <span class="sim-kicker">Your Team</span>
+                    <strong id="home-team-summary">Random Field-Matched Roster</strong>
+                  </div>
+                  <button class="ghost small" id="btn-open-team" type="button">Import Team</button>
+                </div>
               </div>
+
               <div class="mode-actions">
                 <button class="primary" id="btn-ai-quick" type="button">Battle Now</button>
                 <button class="ghost" id="btn-ai-lobby" type="button" title="Inspect &amp; reroll your team or choose a field/boss before starting">Stage Lobby</button>
@@ -98,7 +131,7 @@
                 <span class="format-pill">Lv.50 · 6v6 Online</span>
               </div>
               <h2>VS a Friend</h2>
-              <p>Open a private online room with a shareable 5-letter code or invite link. Preview or hide full team sheets, reroll matchups, or lock in a specific field.</p>
+              <p>Open a private online room with a shareable 5-letter code or invite link. Preview or hide full team sheets, import custom pastes, or lock in a specific field.</p>
               <div class="mode-options">
                 <span class="opt-label">Matchmaking</span>
                 <span class="badge">Invite Code / Link</span>
@@ -135,7 +168,7 @@
                 <div class="games" id="spotlight-games"></div>
               </div>
               <h3 class="spotlight-title" id="spotlight-name">Loading field database…</h3>
-              <p class="spotlight-desc" id="spotlight-desc">Inspect damage modifiers, added move types, and mid-battle field transitions across all 63 states.</p>
+              <p class="spotlight-desc" id="spotlight-desc">Inspect damage modifiers, added move types, Field Seeds, and mid-battle transitions across all 63 states.</p>
             </div>
             <div class="btn-row">
               <button class="ghost small" id="btn-spotlight-roll" type="button">Sample Another</button>
@@ -167,10 +200,26 @@
               <div class="panel host-controls" id="host-controls">
                 <h3>Match Rules &amp; Field</h3>
                 <div class="row" id="row-boss">
-                  <label for="sel-boss">Boss Preset</label>
-                  <select id="sel-boss">
-                    <option value="none">Random Trainer &amp; Field</option>
-                  </select>
+                  <label>Story Boss</label>
+                  <div class="btn-row" style="justify-content:flex-end;">
+                    <span id="lobby-boss-label" class="lobby-boss-pill">Random Trainer</span>
+                    <button class="ghost small" id="btn-lobby-bosses" type="button">Browse</button>
+                    <button class="ghost small hidden" id="btn-lobby-boss-clear" type="button">Clear</button>
+                  </div>
+                </div>
+                <div class="row hidden" id="row-level-mode">
+                  <label>Level Scaling</label>
+                  <div class="seg" id="seg-lobby-level" role="group" aria-label="Lobby Level Scaling">
+                    <button type="button" data-v="lv50">Lv.50</button>
+                    <button type="button" data-v="canonical">Story Cap</button>
+                  </div>
+                </div>
+                <div class="row" id="row-dex-mode">
+                  <label>Roster Pool</label>
+                  <div class="seg" id="seg-lobby-dex" role="group" aria-label="Lobby Roster Pool">
+                    <button type="button" data-v="champions">Champions</button>
+                    <button type="button" data-v="natdex">NatDex</button>
+                  </div>
                 </div>
                 <div class="row">
                   <label for="sel-field">Active Field</label>
@@ -211,7 +260,10 @@
               <div id="lobby-seats" class="seats"></div>
 
               <div class="lobby-action-bar">
-                <button class="ghost" id="btn-reroll-mine" type="button">Reroll My Team</button>
+                <div class="btn-row">
+                  <button class="ghost" id="btn-reroll-mine" type="button">Reroll My Team</button>
+                  <button class="ghost" id="btn-lobby-team" type="button">Import / Export Team</button>
+                </div>
                 <button class="primary big" id="btn-start" type="button">Launch Battle</button>
               </div>
 
@@ -312,6 +364,67 @@
       <div class="guide-body">
         <div class="guide-list" id="guide-list"></div>
         <div class="guide-detail" id="guide-detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STORY BOSS CAMPAIGN SIMULATOR MODAL -->
+  <div class="modal hidden" id="modal-bosses" role="dialog" aria-modal="true" aria-labelledby="bosses-title">
+    <div class="modal-card wide boss-modal-card">
+      <div class="modal-head">
+        <div class="boss-head-left">
+          <h2 id="bosses-title">Story Boss Simulator</h2>
+          <span class="badge boss-prog" id="boss-progress-pill">0 / 594 Defeated</span>
+        </div>
+        <div class="seg small-seg" id="seg-modal-level" role="group" aria-label="Boss Level Mode">
+          <button type="button" data-v="lv50" class="on" title="Normalize both rosters to Level 50">Lv.50</button>
+          <button type="button" data-v="canonical" title="Use exact canonical story levels &amp; cap">Story Cap</button>
+        </div>
+        <button class="ghost small" id="btn-boss-modal-team" type="button">Custom Team</button>
+        <button class="ghost small" id="btn-bosses-close" type="button" aria-label="Close Story Bosses">Close</button>
+      </div>
+
+      <div class="boss-filter-bar">
+        <div class="seg" id="boss-game-tabs" role="tablist" aria-label="Filter by game">
+          <button type="button" data-game="all" class="on">All Games</button>
+          <button type="button" data-game="Reborn">Reborn</button>
+          <button type="button" data-game="Rejuvenation">Rejuvenation</button>
+          <button type="button" data-game="Desolation">Desolation</button>
+        </div>
+        <div class="boss-cat-pills" id="boss-cat-tabs" role="group" aria-label="Filter by boss category">
+          <button type="button" data-cat="all" class="on">All</button>
+          <button type="button" data-cat="gym">Gyms &amp; Badges</button>
+          <button type="button" data-cat="rival">Rivals</button>
+          <button type="button" data-cat="evil">Villains &amp; Admins</button>
+          <button type="button" data-cat="elite">Elite &amp; Postgame</button>
+          <button type="button" data-cat="boss">Story &amp; Raid Bosses</button>
+        </div>
+        <input id="boss-search" type="text" placeholder="Search trainer, badge/chapter, field, or ace…">
+      </div>
+
+      <div class="boss-grid" id="boss-grid"></div>
+    </div>
+  </div>
+
+  <!-- CUSTOM SHOWDOWN TEAM IMPORT / EXPORT MODAL -->
+  <div class="modal hidden" id="modal-team" role="dialog" aria-modal="true" aria-labelledby="team-modal-title">
+    <div class="modal-card team-modal-card">
+      <div class="modal-head">
+        <h2 id="team-modal-title">Custom Team Builder (Showdown Paste)</h2>
+        <button class="ghost small" id="btn-team-close" type="button">Close</button>
+      </div>
+      <p class="team-modal-sub">
+        Paste any 1–6 Pokémon Showdown export. Full Gen 1–9 National Dex, Aevian regional forms (e.g. <code>Parasect-Aevian</code>), Field Seeds (<code>Elemental Seed</code>, <code>Magical Seed</code>, <code>Synthetic Seed</code>, <code>Telluric Seed</code>), Crests (<code>Luxray Crest</code>, <code>Typhlosion Crest</code>), custom Mega Stones (<code>Luxrite</code>, <code>Cinccinite</code>), and Z-Crystals are supported.
+      </p>
+      <textarea id="team-paste-input" rows="11" spellcheck="false" placeholder="Gardevoir @ Gardevoirite&#10;Ability: Trace&#10;EVs: 252 SpA / 4 SpD / 252 Spe&#10;Timid Nature&#10;- Moonblast&#10;- Psychic&#10;- Mystical Fire&#10;- Calm Mind"></textarea>
+      <div class="team-preview-strip" id="team-paste-preview"></div>
+      <div class="btn-row" style="justify-content:space-between;margin-top:12px;">
+        <div class="btn-row">
+          <button class="ghost small" id="btn-team-sample" type="button">Load Sample Seed/Crest Team</button>
+          <button class="ghost small" id="btn-team-export" type="button">Export Current Team</button>
+          <button class="ghost small danger" id="btn-team-clear" type="button">Use Random Teams</button>
+        </div>
+        <button class="primary" id="btn-team-save" type="button">Validate &amp; Save Team</button>
       </div>
     </div>
   </div>

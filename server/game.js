@@ -3,13 +3,14 @@ const {randomInt} = require('./rand');
 const {
   randomTeam,
   createBattle,
+  parseTeamPaste,
+  exportTeamPaste,
   describeSet,
   publicMoveEffectiveness,
   scoreSetOnField,
   generateFieldTeam,
   generateAIMatchupTeams,
   fields,
-  Dex,
 } = require('./sim');
 const ai = require('./ai');
 const bosses = require('./bosses');
@@ -44,9 +45,12 @@ class Room {
     this.mode = mode; // 'ai' | 'pvp' | 'ffa'
     this.seatCount = mode === 'ffa' ? 4 : 2;
     this.difficulty = ['easy', 'normal', 'hard'].includes(opts.difficulty) ? opts.difficulty : 'normal';
+    this.dexMode = opts.dexMode === 'natdex' ? 'natdex' : 'champions';
+    this.levelMode = opts.levelMode === 'canonical' ? 'canonical' : 'lv50';
     this.fieldFilter = ['all', 'Reborn', 'Rejuvenation', 'Desolation'].includes(opts.fieldFilter) ? opts.fieldFilter : 'all';
     this.fieldChoice = opts.field && (opts.field === 'random' || fields.FIELDS.has(opts.field)) ? opts.field : 'random';
-    this.bossId = mode === 'ai' && opts.bossId && bosses.getBoss(opts.bossId) ? opts.bossId : null;
+    const initBoss = mode === 'ai' && opts.bossId ? bosses.getBoss(opts.bossId) : null;
+    this.bossId = initBoss ? initBoss.id : null;
     this.normalBalance = 2;
     this.fieldId = null;
     // Hide opponent items & moves vs AI (and by default in AI-filled FFA)
@@ -58,9 +62,15 @@ class Room {
     this.game = null;
     this.hostToken = host.token;
 
+    let initialCustomTeam = null;
+    if (opts.customTeamPaste) {
+      const parsed = parseTeamPaste(opts.customTeamPaste);
+      if (parsed.ok) initialCustomTeam = parsed.team;
+    }
+
     this.rollField();
 
-    this.seats[0] = {token: host.token, name: host.name, isAI: false, client: host, team: []};
+    this.seats[0] = {token: host.token, name: host.name, isAI: false, client: host, team: [], customTeam: initialCustomTeam};
     host.room = this;
     if (mode === 'ai') this.seats[1] = this.makeAISeat(false);
     if (mode === 'ffa' && opts.fillAI) for (let i = 1; i < 4; i++) this.seats[i] = this.makeAISeat(true);
@@ -71,11 +81,35 @@ class Room {
     this.lastActivity = Date.now();
   }
 
+  effectiveDexMode() {
+    if (this.bossId || this.dexMode === 'natdex') return 'natdex';
+    if (this.seats.some(s => s?.customTeam)) return 'natdex';
+    return 'champions';
+  }
+
+  targetPlayerLevel() {
+    if (this.bossId && this.levelMode === 'canonical') {
+      const b = bosses.getBoss(this.bossId);
+      return b ? b.cap : 50;
+    }
+    return 50;
+  }
+
+  scaleCustomTeam(customTeam) {
+    const capLevel = this.targetPlayerLevel();
+    const isCanonical = this.bossId && this.levelMode === 'canonical';
+    return customTeam.map(p => ({
+      ...p,
+      level: isCanonical ? (p.explicitLevel ? p.level : capLevel) : 50,
+    }));
+  }
+
   makeAISeat(withRandomTeam = true) {
     const used = this.seats.filter(Boolean).map(s => s.name);
     const boss = this.bossId ? bosses.getBoss(this.bossId) : null;
     const name = boss ? boss.name : bosses.pickAIName(used, this.fieldId);
-    return {token: null, name, isAI: true, client: null, team: withRandomTeam ? randomTeam() : []};
+    const team = withRandomTeam ? randomTeam({dexMode: this.effectiveDexMode(), level: 50}) : [];
+    return {token: null, name, isAI: true, client: null, team, customTeam: null};
   }
 
   rollField() {
@@ -91,6 +125,9 @@ class Room {
   }
 
   syncTeamsToField({refreshAIName = false} = {}) {
+    const effDex = this.effectiveDexMode();
+    const pLevel = this.targetPlayerLevel();
+
     if (this.mode === 'ai') {
       const boss = this.bossId ? bosses.getBoss(this.bossId) : null;
       if (boss) {
@@ -98,14 +135,18 @@ class Room {
         this.fieldChoice = boss.fieldId;
         if (this.seats[1]) {
           this.seats[1].name = boss.name;
-          this.seats[1].team = bosses.buildBossTeam(boss.id);
+          this.seats[1].team = bosses.buildBossTeam(boss.id, {levelMode: this.levelMode});
         }
         if (this.seats[0]) {
-          this.seats[0].team = this.difficulty === 'easy'
-            ? generateFieldTeam(this.fieldId, 'good')
-            : this.difficulty === 'hard'
-              ? generateFieldTeam(this.fieldId, 'bad')
-              : randomTeam();
+          if (this.seats[0].customTeam) {
+            this.seats[0].team = this.scaleCustomTeam(this.seats[0].customTeam);
+          } else {
+            this.seats[0].team = this.difficulty === 'easy'
+              ? generateFieldTeam(this.fieldId, 'good', {dexMode: effDex, level: pLevel})
+              : this.difficulty === 'hard'
+                ? generateFieldTeam(this.fieldId, 'bad', {dexMode: effDex, level: pLevel})
+                : randomTeam({dexMode: effDex, level: pLevel});
+          }
         }
         this.normalBalance = null;
         return;
@@ -115,35 +156,42 @@ class Room {
         const used = [this.seats[0]?.name].filter(Boolean);
         this.seats[1].name = bosses.pickAIName(used, this.fieldId);
       }
-      const {playerTeam, aiTeam, balanceCount} = generateAIMatchupTeams(this.fieldId, this.difficulty);
+      const {playerTeam, aiTeam, balanceCount} = generateAIMatchupTeams(this.fieldId, this.difficulty, {dexMode: effDex, level: 50});
       this.normalBalance = balanceCount;
-      if (this.seats[0]) this.seats[0].team = playerTeam;
+      if (this.seats[0]) {
+        this.seats[0].team = this.seats[0].customTeam ? this.scaleCustomTeam(this.seats[0].customTeam) : playerTeam;
+      }
       if (this.seats[1]) this.seats[1].team = aiTeam;
       return;
     }
 
     for (const s of this.seats) {
-      if (s && (!s.team || !s.team.length)) s.team = randomTeam();
+      if (!s) continue;
+      if (s.customTeam) s.team = this.scaleCustomTeam(s.customTeam);
+      else if (!s.team || !s.team.length) s.team = randomTeam({dexMode: effDex, level: 50});
     }
   }
 
   rerollSinglePlayerTeam(seatIdx) {
     const s = this.seats[seatIdx];
     if (!s) return;
+    s.customTeam = null;
+    const effDex = this.effectiveDexMode();
+    const pLevel = this.targetPlayerLevel();
     if (this.mode === 'ai' && seatIdx === 0) {
       if (this.difficulty === 'easy') {
-        s.team = generateFieldTeam(this.fieldId, 'good');
+        s.team = generateFieldTeam(this.fieldId, 'good', {dexMode: effDex, level: pLevel});
       } else if (this.difficulty === 'hard') {
-        s.team = generateFieldTeam(this.fieldId, 'bad');
+        s.team = generateFieldTeam(this.fieldId, 'bad', {dexMode: effDex, level: pLevel});
       } else if (this.bossId) {
-        s.team = randomTeam();
+        s.team = randomTeam({dexMode: effDex, level: pLevel});
       } else {
         const k = this.normalBalance || 2;
-        s.team = generateFieldTeam(this.fieldId, {good: k, bad: k, neutral: 6 - 2 * k});
+        s.team = generateFieldTeam(this.fieldId, {good: k, bad: k, neutral: 6 - 2 * k}, {dexMode: effDex, level: pLevel});
       }
       return;
     }
-    s.team = randomTeam();
+    s.team = randomTeam({dexMode: effDex, level: 50});
   }
 
   clients() {
@@ -167,7 +215,7 @@ class Room {
     if (this.status === 'lobby') {
       const idx = this.seats.findIndex(s => !s);
       if (idx >= 0) {
-        this.seats[idx] = {token: client.token, name: client.name, isAI: false, client, team: randomTeam()};
+        this.seats[idx] = {token: client.token, name: client.name, isAI: false, client, team: randomTeam({dexMode: this.effectiveDexMode()}), customTeam: null};
         client.room = this;
         this.system(`${client.name} joined the room.`);
         return idx;
@@ -212,6 +260,7 @@ class Room {
   roomView(client) {
     const you = this.seatOf(client);
     const showOpponentSheets = this.mode !== 'ai' && this.openSheets;
+    const bossObj = this.bossId ? bosses.getBoss(this.bossId) : null;
     return {
       code: this.code,
       mode: this.mode,
@@ -219,8 +268,23 @@ class Room {
       you,
       isHost: this.isHost(client),
       difficulty: this.difficulty,
+      dexMode: this.dexMode,
+      effectiveDexMode: this.effectiveDexMode(),
+      levelMode: this.levelMode,
       bossId: this.bossId,
-      bossList: bosses.listBosses(),
+      boss: bossObj ? {
+        id: bossObj.id,
+        game: bossObj.game,
+        category: bossObj.category,
+        name: bossObj.name,
+        displayName: bossObj.displayName,
+        section: bossObj.section,
+        fieldId: bossObj.fieldId,
+        fieldName: bossObj.fieldName,
+        cap: bossObj.cap,
+        ace: bossObj.ace,
+        subtitle: bossObj.subtitle,
+      } : null,
       normalBalance: this.normalBalance,
       fieldChoice: this.fieldChoice,
       fieldFilter: this.fieldFilter,
@@ -234,6 +298,7 @@ class Room {
         isAI: s.isAI,
         connected: s.isAI || !!s.client,
         isHost: s.token === this.hostToken,
+        hasCustomTeam: !!s.customTeam,
         team: s.team.map(set => {
           const d = describeSet(set, this.fieldId);
           return (i === you || showOpponentSheets)
@@ -247,7 +312,7 @@ class Room {
     for (const c of this.clients()) c.send({t: 'room', room: this.roomView(c)});
   }
 
-  // Host lobby controls
+  // Host & player lobby controls
   handleLobby(client, msg) {
     if (this.status === 'battle') return;
     const host = this.isHost(client);
@@ -267,7 +332,8 @@ class Room {
         if (this.mode === 'ai') {
           this.syncTeamsToField();
         } else {
-          for (const s of this.seats) if (s) s.team = randomTeam();
+          const effDex = this.effectiveDexMode();
+          for (const s of this.seats) if (s && !s.customTeam) s.team = randomTeam({dexMode: effDex});
         }
       } else if (msg.what === 'myteam') {
         if (mySeat < 0) return;
@@ -290,6 +356,21 @@ class Room {
       this.difficulty = msg.value;
       if (this.mode === 'ai') this.syncTeamsToField();
       break;
+    case 'setDexMode':
+      if (!host || !['champions', 'natdex'].includes(msg.value)) return;
+      this.dexMode = msg.value;
+      if (this.mode === 'ai') {
+        this.syncTeamsToField();
+      } else {
+        const effDex = this.effectiveDexMode();
+        for (const s of this.seats) if (s && !s.customTeam) s.team = randomTeam({dexMode: effDex});
+      }
+      break;
+    case 'setLevelMode':
+      if (!host || !['lv50', 'canonical'].includes(msg.value)) return;
+      this.levelMode = msg.value;
+      if (this.mode === 'ai') this.syncTeamsToField();
+      break;
     case 'setBoss': {
       if (!host || this.mode !== 'ai') return;
       if (!msg.bossId || msg.bossId === 'none') {
@@ -297,12 +378,43 @@ class Room {
         this.fieldChoice = 'random';
         this.rollField();
         this.syncTeamsToField({refreshAIName: true});
-      } else if (bosses.getBoss(msg.bossId)) {
-        this.bossId = msg.bossId;
-        this.rollField();
-        this.syncTeamsToField();
+      } else {
+        const b = bosses.getBoss(msg.bossId);
+        if (b) {
+          this.bossId = b.id;
+          if (msg.levelMode && ['lv50', 'canonical'].includes(msg.levelMode)) {
+            this.levelMode = msg.levelMode;
+          }
+          this.rollField();
+          this.syncTeamsToField();
+        }
       }
       break;
+    }
+    case 'setCustomTeam': {
+      if (mySeat < 0) return;
+      const seat = this.seats[mySeat];
+      if (!msg.paste || !String(msg.paste).trim()) {
+        seat.customTeam = null;
+        this.rerollSinglePlayerTeam(mySeat);
+        client.send({t: 'teamSaved', custom: false, count: seat.team.length});
+      } else {
+        const res = parseTeamPaste(msg.paste);
+        if (!res.ok) {
+          client.send({t: 'error', msg: res.error});
+          return;
+        }
+        seat.customTeam = res.team;
+        seat.team = this.scaleCustomTeam(res.team);
+        client.send({t: 'teamSaved', custom: true, count: res.team.length});
+        this.system(`${seat.name} loaded a custom team (${res.team.length} Pokémon).`);
+      }
+      break;
+    }
+    case 'exportTeam': {
+      if (mySeat < 0) return;
+      client.send({t: 'teamExport', paste: exportTeamPaste(this.seats[mySeat].team)});
+      return;
     }
     case 'setOpenSheets':
       if (!host || this.mode === 'ai') return;
@@ -346,7 +458,11 @@ class Room {
       if (this.mode === 'ai') {
         this.syncTeamsToField({refreshAIName: !this.bossId});
       } else {
-        for (const s of this.seats) if (s) s.team = randomTeam();
+        const effDex = this.effectiveDexMode();
+        for (const s of this.seats) {
+          if (!s) continue;
+          s.team = s.customTeam ? this.scaleCustomTeam(s.customTeam) : randomTeam({dexMode: effDex});
+        }
       }
     }
     this.status = 'battle';
@@ -368,7 +484,11 @@ class Room {
     if (this.mode === 'ai') {
       this.syncTeamsToField({refreshAIName: !this.bossId});
     } else {
-      for (const s of this.seats) if (s) s.team = randomTeam();
+      const effDex = this.effectiveDexMode();
+      for (const s of this.seats) {
+        if (!s) continue;
+        s.team = s.customTeam ? this.scaleCustomTeam(s.customTeam) : randomTeam({dexMode: effDex});
+      }
     }
     this.broadcastRoom();
   }
@@ -384,15 +504,23 @@ class Game {
     this.pendingRequests = {};
     this.deadline = null;
     this.timer = null;
+    this.dexMode = room.effectiveDexMode();
+    this.levelMode = room.bossId ? room.levelMode : 'lv50';
     this.battle = createBattle(room.mode === 'ffa' ? 'ffa' : 'singles', {
+      dexMode: this.dexMode,
+      levelMode: this.levelMode,
       send: (type, data) => this.onSend(type, data),
     });
     this.battle.rfieldInitial = room.fieldId;
   }
   begin() {
     const b = this.battle;
+    const force50 = this.levelMode !== 'canonical';
     this.room.seats.forEach((s, i) => {
-      b.setPlayer(`p${i + 1}`, {name: s.name, team: s.team.map(set => ({...set, level: 50}))});
+      b.setPlayer(`p${i + 1}`, {
+        name: s.name,
+        team: s.team.map(set => ({...set, level: force50 ? 50 : (set.level || 50)})),
+      });
     });
     this.flush();
   }
@@ -535,6 +663,7 @@ class Game {
         if (targetSide?.active[0] && me) choice += ` ${me.getLocOf(targetSide.active[0])}`;
       }
       if (c.mega) choice += ' mega';
+      else if (c.zmove) choice += ' zmove';
     } else if (c.kind === 'switch') {
       choice = `switch ${Number(c.index) + 1}`;
     } else {
@@ -564,6 +693,7 @@ class Game {
   // Views
   // ---------------------------------------------------------------------
   pokeView(p, own) {
+    const d = this.battle.dex;
     const hpPct = p.hp <= 0 ? 0 : Math.max(1, Math.round(100 * p.hp / p.maxhp));
     const showSheets = own || (this.room.mode !== 'ai' && this.room.openSheets);
     const v = {
@@ -582,11 +712,11 @@ class Game {
       volatiles: Object.keys(p.volatiles).map(id => VOLATILE_NAMES[id]).filter(Boolean),
     };
     if (showSheets) {
-      v.item = p.item ? Dex.mod('champions').items.get(p.item).name : 'None';
-      v.ability = Dex.mod('champions').abilities.get(p.ability).name;
+      v.item = p.item ? (d.items.get(p.item).name || p.item) : 'None';
+      v.ability = d.abilities.get(p.ability).name || p.ability;
       v.moves = p.moveSlots.map(m => {
-        const mv = Dex.mod('champions').moves.get(m.id);
-        return {name: mv.name, type: mv.type, pp: m.pp, maxpp: m.maxpp};
+        const mv = d.moves.get(m.id);
+        return {name: mv.name || m.move, type: mv.type || 'Normal', pp: m.pp, maxpp: m.maxpp};
       });
     }
     if (own) {
@@ -603,6 +733,7 @@ class Game {
 
   stateFor(seat) {
     const b = this.battle;
+    const d = b.dex;
     const st = fields.getState(b);
     return {
       turn: b.turn,
@@ -613,9 +744,9 @@ class Game {
         overlay: !!st.overlay,
         overlayBase: st.overlay ? fields.publicInfo(st.overlay.prev).name : null,
       },
-      weather: b.field.weather ? {id: b.field.weather, name: Dex.mod('champions').conditions.get(b.field.weather).name, turns: b.field.weatherState.duration ?? null} : null,
-      terrain: b.field.terrain ? {id: b.field.terrain, name: Dex.mod('champions').conditions.get(b.field.terrain).name, turns: b.field.terrainState.duration ?? null} : null,
-      pseudo: Object.keys(b.field.pseudoWeather).filter(id => id !== 'rebornfield').map(id => Dex.mod('champions').conditions.get(id).name),
+      weather: b.field.weather ? {id: b.field.weather, name: d.conditions.get(b.field.weather).name, turns: b.field.weatherState.duration ?? null} : null,
+      terrain: b.field.terrain ? {id: b.field.terrain, name: d.conditions.get(b.field.terrain).name, turns: b.field.terrainState.duration ?? null} : null,
+      pseudo: Object.keys(b.field.pseudoWeather).filter(id => id !== 'rebornfield').map(id => d.conditions.get(id).name),
       deadline: this.deadline,
       ended: this.ended,
       winner: this.winner,
@@ -627,7 +758,7 @@ class Game {
         isYou: i === seat,
         pokemonLeft: side.pokemonLeft,
         conditions: Object.entries(side.sideConditions).map(([id, s]) => {
-          const name = Dex.mod('champions').conditions.get(id).name;
+          const name = d.conditions.get(id).name;
           return s.layers > 1 ? `${name} ×${s.layers}` : name;
         }),
         active: side.active[0] ? this.pokeView(side.active[0], i === seat) : null,
@@ -643,18 +774,30 @@ class Game {
     if (!this.sideNeedsChoice(side)) return null;
     const req = JSON.parse(JSON.stringify(side.activeRequest));
     const me = side.active[0];
+    const d = this.battle.dex;
     if (req.active && me) {
       const oppSides = this.battle.sides.filter((_, i) => i !== seat);
-      for (const m of req.active[0].moves) {
-        const mv = Dex.mod('champions').moves.get(m.id);
-        m.name = mv.name;
-        m.type = mv.type;
-        m.category = mv.category;
-        m.basePower = mv.basePower;
+      const canZ = req.active[0].canZMove || null;
+      req.active[0].moves.forEach((m, idx) => {
+        const mv = d.moves.get(m.id);
+        m.name = mv.name || m.move;
+        m.type = mv.type || 'Normal';
+        m.category = mv.category || 'Physical';
+        m.basePower = mv.basePower || 0;
         m.accuracy = mv.accuracy;
-        m.priority = mv.priority;
-        m.desc = mv.shortDesc || mv.desc;
-        m.moveTarget = mv.target;
+        m.priority = mv.priority || 0;
+        m.desc = mv.shortDesc || mv.desc || '';
+        m.moveTarget = mv.target || 'normal';
+        if (canZ && canZ[idx]) {
+          const zObj = canZ[idx];
+          const zmv = d.moves.get(zObj.move);
+          m.zMove = {
+            name: zmv.name || zObj.move,
+            type: zmv.type || m.type,
+            basePower: zObj.basePower || zmv.basePower || 160,
+            target: zObj.target || 'normal',
+          };
+        }
         try {
           m.field = fields.describeMoveOnField(this.battle, me, m.id);
         } catch {
@@ -665,16 +808,16 @@ class Game {
             m.eff = publicMoveEffectiveness(this.battle, me, oppSides[0].active[0], m.id);
           } else if (oppSides.length > 1) {
             m.effBySeat = {};
-            this.battle.sides.forEach((s, idx) => {
-              if (idx !== seat && s.active[0] && !s.active[0].fainted) {
-                m.effBySeat[idx] = publicMoveEffectiveness(this.battle, me, s.active[0], m.id);
+            this.battle.sides.forEach((s, oIdx) => {
+              if (oIdx !== seat && s.active[0] && !s.active[0].fainted) {
+                m.effBySeat[oIdx] = publicMoveEffectiveness(this.battle, me, s.active[0], m.id);
               }
             });
           }
         } catch {
           // ignore effectiveness preview errors
         }
-      }
+      });
     }
     return req;
   }

@@ -238,6 +238,7 @@ function choose(battle, side, request, difficulty = 'normal') {
     choice += ` ${me.getLocOf(best.foe)}`;
   }
   if (active.canMegaEvo) choice += ' mega';
+  else if (active.canZMove?.[best.i] && (best.score >= 35 || difficulty === 'hard')) choice += ' zmove';
   return choice;
 }
 

@@ -7,6 +7,9 @@
  * stat modifiers, ability activations, residuals, and mid-battle field transformations.
  */
 const {Dex, toID} = require('pokemon-showdown');
+const {installCustomDex, activateFieldSeed, FIELD_SEEDS} = require('./custom_dex');
+
+installCustomDex();
 
 const NATIVE_TERRAIN_FIELD = {
   electricterrain: 'electric',
@@ -23,7 +26,7 @@ const ALL_TYPES = [
   'Flying', 'Psychic', 'Bug', 'Rock', 'Ghost', 'Dragon', 'Dark', 'Steel', 'Fairy',
 ];
 
-const dex = Dex.mod('champions');
+const dex = Dex.mod('gen9');
 
 function moveIds(list) {
   if (!list) return null;
@@ -275,6 +278,7 @@ function publicInfo(id) {
       transforms.push({to: toName, trigger: trig});
     }
   }
+  const seedId = FIELD_SEEDS[f.id]?.seed;
   return {
     id: f.id,
     name: f.name,
@@ -286,6 +290,7 @@ function publicInfo(id) {
     info: f.info,
     mimicry: f.mimicry,
     naturePower: f.naturePower ? dex.moves.get(f.naturePower).name : 'Tri Attack',
+    seed: seedId ? dex.items.get(seedId).name : null,
     theme: f.theme || {},
     transforms,
   };
@@ -311,7 +316,10 @@ function applyPokemonFieldEntry(battle, pokemon, f) {
       }
     }
   }
-  // Activate matching terrain seeds on custom fields too
+  // Activate canonical Reborn/Rejuvenation/Desolation Field Seeds (Elemental, Magical, Synthetic, Telluric)
+  activateFieldSeed(battle, pokemon, f, setField);
+
+  // Activate vanilla terrain seeds on custom fields if specified
   if (f?.seedBoosts && pokemon.item) {
     const seedItems = ['electricseed', 'grassyseed', 'mistyseed', 'psychicseed'];
     const wantedSeed = f.seedItem || null;
@@ -663,6 +671,9 @@ function buildCondition() {
       const f = currentField(this);
       const mapped = NATIVE_TERRAIN_FIELD[t];
       if (t && mapped) {
+        if (this.field.terrainState?.source?.hasItem('amplifieldrock') && this.field.terrainState.duration === 5) {
+          this.field.terrainState.duration = 8;
+        }
         if (f?.blockTerrain) {
           st.syncing = true;
           this.field.clearTerrain();

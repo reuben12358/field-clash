@@ -14,9 +14,11 @@ export function toID(s) {
 
 /** species name -> showdown sprite id (cache filled from server data) */
 export const spriteIds = new Map();
-const SPECIAL_BASES = ['Ho-Oh', 'Porygon-Z', 'Jangmo-o', 'Hakamo-o', 'Kommo-o', 'Chi-Yu', 'Chien-Pao', 'Ting-Lu', 'Wo-Chien', 'Type: Null', 'Mr. Mime', 'Mime Jr.', 'Mr. Rime'];
+const SPECIAL_BASES = ['Ho-Oh', 'Porygon-Z', 'Jangmo-o', 'Hakamo-o', 'Kommo-o', 'Chi-Yu', 'Chien-Pao', 'Ting-Lu', 'Wo-Chien', 'Type: Null', 'Mr. Mime', 'Mime Jr.', 'Mr. Rime', 'Tapu Koko', 'Tapu Lele', 'Tapu Bulu', 'Tapu Fini'];
 export function spriteIdFor(species) {
   if (spriteIds.has(species)) return spriteIds.get(species);
+  if (species === 'Solrock Fusion') return 'solrock';
+  if (species === 'Lunatone Fusion') return 'lunatone';
   for (const b of SPECIAL_BASES) {
     if (species.startsWith(b)) {
       const rest = species.slice(b.length).replace(/^-/, '');
@@ -34,13 +36,19 @@ export function rememberSprite(species, id) {
 const CDN = 'https://play.pokemonshowdown.com/sprites';
 export function spriteUrls(species, {back = false, shiny = false} = {}) {
   const id = spriteIdFor(species);
+  const baseId = id.split('-')[0];
   const s = shiny ? '-shiny' : '';
-  return [
+  const urls = [
     `${CDN}/ani${back ? '-back' : ''}${s}/${id}.gif`,
     `${CDN}/gen5${back ? '-back' : ''}${s}/${id}.png`,
-    `${CDN}/gen5${back ? '-back' : ''}/${id.split('-')[0]}.png`,
-    `${CDN}/dex/${id}.png`,
   ];
+  if (baseId && baseId !== id) {
+    urls.push(`${CDN}/ani${back ? '-back' : ''}${s}/${baseId}.gif`);
+    urls.push(`${CDN}/gen5${back ? '-back' : ''}${s}/${baseId}.png`);
+  }
+  urls.push(`${CDN}/gen5${back ? '-back' : ''}/${baseId}.png`);
+  urls.push(`${CDN}/dex/${baseId}.png`);
+  return urls;
 }
 export function iconUrl(species) {
   return spriteUrls(species)[1];

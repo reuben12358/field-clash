@@ -5,7 +5,7 @@
  * host player's browser and wires it to WebRTC (PeerJS) data channels.
  */
 const {Room, Game, rooms} = require('./game');
-const {fields} = require('./sim');
+const {fields, parseTeamPaste, describeSet} = require('./sim');
 const {listBosses} = require('./bosses');
 const {randomInt, randomHex} = require('./rand');
 
@@ -86,15 +86,35 @@ function createHub() {
       }
       client.send({t: 'welcome', token: client.token, name: client.name, bosses: apiBosses()});
       break;
+    case 'validateTeam': {
+      const res = parseTeamPaste(msg.paste);
+      if (!res.ok) {
+        client.send({t: 'teamValidated', ok: false, error: res.error});
+      } else {
+        client.send({
+          t: 'teamValidated',
+          ok: true,
+          paste: String(msg.paste || '').trim(),
+          preview: res.team.map(s => {
+            const d = describeSet(s);
+            return {species: d.species, spriteid: d.spriteid, item: d.item, ability: d.ability, level: d.level};
+          }),
+        });
+      }
+      break;
+    }
     case 'create': {
       if (room) room.leave(client);
       const mode = ['ai', 'pvp', 'ffa'].includes(msg.mode) ? msg.mode : 'ai';
       const r = new Room(mode, client, {
         difficulty: msg.difficulty,
+        dexMode: msg.dexMode,
+        levelMode: msg.levelMode,
         fillAI: msg.fillAI,
         fieldFilter: msg.fieldFilter,
         field: msg.field,
         bossId: msg.bossId && msg.bossId !== 'none' ? msg.bossId : null,
+        customTeamPaste: msg.customTeamPaste || null,
       });
       if (msg.quickStart && (mode === 'ai' || (mode === 'ffa' && msg.fillAI))) {
         r.startGame();
@@ -129,7 +149,11 @@ function createHub() {
     case 'reroll':
     case 'setField':
     case 'setDifficulty':
+    case 'setDexMode':
+    case 'setLevelMode':
     case 'setBoss':
+    case 'setCustomTeam':
+    case 'exportTeam':
     case 'setOpenSheets':
     case 'addAI':
     case 'kick':

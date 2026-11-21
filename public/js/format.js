@@ -238,6 +238,10 @@ export class LogFormatter {
       return {html: `${this.pk(args[0], true)} transformed into ${esc(this.monName(args[1]))}!`};
     case '-mega':
       return {html: `${this.pk(args[0], true)} has Mega Evolved into Mega ${esc(args[1])}!`, cls: 'eff', ev: {type: 'mega', ident: args[0]}};
+    case '-zpower':
+      return {html: `${this.pk(args[0], true)} surrounded itself with its Z-Power!`, cls: 'eff', ev: {type: 'zpower', ident: args[0]}};
+    case '-zbroken':
+      return {html: `${this.pk(args[0], true)} couldn't fully protect itself and got hurt!`, cls: 'minor'};
     case '-terastallize':
       return {html: `${this.pk(args[0], true)} terastallized into the ${esc(args[1])} type!`, cls: 'eff', ev: {type: 'mega', ident: args[0]}};
     case '-start': {
